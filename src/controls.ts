@@ -80,6 +80,9 @@ export type FirstPersonControls = {
         /** previous tick's grounded, to re-anchor the phase on landing. */
         previousGrounded: boolean;
     };
+    /** Smoothed feet Y the eye follows, so bumpy collider terrain doesn't jolt the view.
+     *  NaN until the first camera update anchors it to the actual feet. */
+    smoothedFeetY: number;
 };
 
 // Initial look angles from the spawn → look-target direction (see scene.ts).
@@ -116,6 +119,7 @@ export function initFirstPersonControls(camera: THREE.PerspectiveCamera, domElem
             offsetY: 0,
             previousGrounded: false,
         },
+        smoothedFeetY: Number.NaN,
     };
 
     // Click the canvas to capture the mouse; once captured, a left-click interacts.
@@ -266,10 +270,29 @@ function updateCameraBob(controls: FirstPersonControls, velocity: Vec3, grounded
 }
 
 // Point the camera at the character's eyes and aim it from yaw/pitch, with view-bob.
+// Eye-height smoothing so bumpy collider terrain doesn't jolt the view. Only applied while
+// grounded — airborne (jumps/falls) the eye tracks the feet exactly, so those stay crisp.
+const EYE_SMOOTH_TAU = 0.09; // seconds — vertical smoothing time constant (bigger = smoother/laggier)
+const EYE_MAX_LAG = 0.35; // metres — the eye never trails the actual feet by more than this
+
 export function updateFirstPersonCamera(controls: FirstPersonControls, character: Character, dt: number): void {
     const feet = character.kcc.position;
     const grounded = character.kcc.ground.state === kcc.GroundState.ON_GROUND;
     updateCameraBob(controls, character.kcc.linearVelocity, grounded, dt);
+
+    // Smooth the feet Y the eye follows. Anchor on first use; while grounded, ease toward the
+    // real feet Y (frame-rate-independent) and clamp the lag so big steps still catch up
+    // quickly. Airborne, snap to the real feet so jumps/falls feel responsive.
+    if (Number.isNaN(controls.smoothedFeetY)) controls.smoothedFeetY = feet[1];
+    if (grounded) {
+        const alpha = 1 - Math.exp(-dt / EYE_SMOOTH_TAU);
+        controls.smoothedFeetY += (feet[1] - controls.smoothedFeetY) * alpha;
+        const lag = controls.smoothedFeetY - feet[1];
+        if (lag > EYE_MAX_LAG) controls.smoothedFeetY = feet[1] + EYE_MAX_LAG;
+        else if (lag < -EYE_MAX_LAG) controls.smoothedFeetY = feet[1] - EYE_MAX_LAG;
+    } else {
+        controls.smoothedFeetY = feet[1];
+    }
 
     // Bob shifts the eye along the yaw-aligned right vector (lateral) and world up
     // (vertical) — the same right = (cos yaw, 0, −sin yaw) the move code uses.
@@ -278,7 +301,7 @@ export function updateFirstPersonCamera(controls: FirstPersonControls, character
     const rightZ = -Math.sin(controls.yaw);
     controls.camera.position.set(
         feet[0] + rightX * bob.offsetX,
-        feet[1] + EYE_HEIGHT + bob.offsetY,
+        controls.smoothedFeetY + EYE_HEIGHT + bob.offsetY,
         feet[2] + rightZ * bob.offsetX,
     );
     controls.camera.rotation.order = 'YXZ';

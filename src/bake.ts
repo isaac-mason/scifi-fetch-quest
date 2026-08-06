@@ -17,7 +17,8 @@ import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
 import type { Vec3 } from 'mathcat';
 import * as THREE from 'three';
 
-import { type Collider, unpackCollider } from './collider-schema';
+import { loadCollider } from './collider-load';
+import type { Collider } from './collider-schema';
 import { bakeProbeGrid, captureCubeFacesAt, serializeProbeGrid } from './light-probes';
 import { initNavigation, loadNavigation, snapToNavMesh } from './navigation';
 import {
@@ -101,7 +102,7 @@ async function main(): Promise<void> {
     renderer.setSize(FACE_SIZE, FACE_SIZE);
     document.body.appendChild(renderer.domElement);
     const camera = new THREE.PerspectiveCamera(60, 1, 0.05, 1000);
-    camera.position.set(-5, 0.6, -5.5); // ship centre
+    camera.position.set(-11, 5, -2); // scifi_world collider centre (warms up streaming)
 
     const spark = new SparkRenderer({ renderer, coneFoveate: 0 });
     scene.add(spark);
@@ -139,7 +140,7 @@ async function main(): Promise<void> {
     await loadNavigation(navigation);
 
     // Collider drives the proximity filter — only keep probes near a ship surface.
-    const collider = unpackCollider(new Uint8Array(await (await fetch(COLLIDER_URL)).arrayBuffer()));
+    const collider = await loadCollider(COLLIDER_URL);
 
     // Snap the XZ grid onto the navmesh floor, then place a probe at each
     // PROBE_HEIGHTS layer above it (vertical variation inside rooms).

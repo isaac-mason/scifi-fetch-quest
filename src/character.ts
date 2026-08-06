@@ -33,6 +33,11 @@ export type Character = {
     kcc: KCC;
     filter: Filter;
     updateSettings: kcc.UpdateSettings;
+    listener: kcc.CharacterListener;
+    /** True only on frames the player is actively steering (has a wish-direction).
+     *  Gates the contact-solve velocity-kill below, so we only slide on intentional
+     *  input and stand dead-still otherwise. */
+    allowSliding: boolean;
 };
 
 export function initCharacter(physics: Physics): Character {
@@ -55,21 +60,42 @@ export function initCharacter(physics: Physics): Character {
             maxSlopeAngle: MAX_SLOPE_ANGLE,
             // Supporting plane passes through the bottom hemisphere centre (local space).
             supportingVolumePlane: vec4.fromValues(0, 1, 0, -CHARACTER_RADIUS),
+            backFaceMode: kcc.BackFaceMode.COLLIDE,
         },
         vec3.fromValues(CHARACTER_SPAWN[0], CHARACTER_SPAWN[1], CHARACTER_SPAWN[2]),
         quat.create(),
     );
+    
 
     kcc.add(physics.world, character);
 
     // Tell physics which body is us, so the interaction view ray skips it.
     physics.playerBodyId = character.innerRigidBodyId;
 
-    return {
+    const updateSettings = kcc.createDefaultUpdateSettings();
+
+    const c: Character = {
         kcc: character,
         filter: filter.create(physics.world.settings.layers),
-        updateSettings: kcc.createDefaultUpdateSettings(),
+        updateSettings,
+        allowSliding: false,
+        listener: {},
     };
+
+    // When the player isn't steering (no wish-dir), kill any velocity the KCC's
+    // penetration recovery generates against a resting, not-too-steep contact. Without
+    // this the character keeps a tiny residual velocity from the uneven collider each
+    // frame — it reads as jittering / drifting while standing still. Mirrors the
+    // crashcat KCC example's onContactSolve. We only clamp when `allowSliding` is false,
+    // so intentional movement (and sliding down steep slopes) is untouched.
+    c.listener.onContactSolve = (_character, _body, _subShapeId, _contactPosition, contactNormal, contactVelocity, _characterVelocity, ioCharacterVelocity) => {
+        if (c.allowSliding) return;
+        if (vec3.squaredLength(contactVelocity) < 1e-6 && !kcc.isSlopeTooSteep(character, contactNormal)) {
+            vec3.zero(ioCharacterVelocity);
+        }
+    };
+
+    return c;
 }
 
 // Scratch vectors — reused each frame to avoid per-frame allocation.
@@ -121,8 +147,13 @@ export function updateCharacter(physics: Physics, c: Character, moveDir: Vec3, j
     if (moveLen > 1e-6) vec3.scale(moveDir, moveDir, 1 / moveLen);
     else vec3.zero(moveDir);
 
+    // Only permit contact sliding when the player is actively steering — see the
+    // onContactSolve listener in initCharacter. A jump also counts as intent so we
+    // don't clamp the launch velocity.
+    c.allowSliding = moveLen > 1e-6 || jump;
+
     // Account for moving platforms under the character (vertical follow + ground vel).
-    kcc.updateGroundVelocity(physics.world, character);
+    kcc.updateGroundVelocity(physics.world, character, c.listener);
 
     // Split current velocity into vertical (along up) and horizontal components.
     vec3.copy(_up, character.up);
@@ -163,5 +194,5 @@ export function updateCharacter(physics: Physics, c: Character, moveDir: Vec3, j
     if (willJump) vec3.zero(c.updateSettings.stickToFloorStepDown);
     else vec3.scale(c.updateSettings.stickToFloorStepDown, character.up, -0.5);
 
-    kcc.update(physics.world, character, dt, GRAVITY, c.updateSettings, undefined, c.filter);
+    kcc.update(physics.world, character, dt, GRAVITY, c.updateSettings, c.listener, c.filter);
 }

@@ -16,7 +16,7 @@
  * Usage:
  *   pnpm build:navmesh [input.glb] [output.json] [seedX] [seedY] [seedZ]
  */
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { NodeIO } from '@gltf-transform/core';
 import {
@@ -36,13 +36,17 @@ import {
     type Vec3,
 } from 'navcat';
 import { floodFillNavMesh, generateSoloNavMesh, type SoloNavMeshOptions } from 'navcat/blocks';
+import { unpackCollider } from '../src/collider-schema.ts';
 
-const INPUT = process.argv[2] ?? 'assets/colliders.glb';
+// Accepts the packed collider (public/collider.bin, world-space positions+indices) or a
+// GLB. The .spz → collider pipeline (scripts/build-collider-spz.ts) writes the .bin.
+const INPUT = process.argv[2] ?? 'public/collider.bin';
 const OUTPUT = process.argv[3] ?? 'public/navmesh.json';
 
 // Prune seed: keep only polys reachable from the poly nearest this world point.
 // It must sit on the connected walkable area you want to keep (the playable deck).
-const SEED: Vec3 = [-12, 0.5, -9];
+// Kept in sync with CHARACTER_SPAWN in src/scene.ts (where the player actually stands).
+const SEED: Vec3 = [3, 1, -14];
 // Search box for snapping the seed onto a poly (world units). Generous in Y so the
 // seed height doesn't have to be exact.
 const SEED_HALF_EXTENTS: Vec3 = [1, 4, 1];
@@ -122,7 +126,12 @@ function sanitizeTilePolys(tile: NavMeshTile, keep: boolean[]): NavMeshTileParam
             );
         }
 
-        detailMeshes.push({ verticesBase, verticesCount: detail.verticesCount, trianglesBase, trianglesCount: detail.trianglesCount });
+        detailMeshes.push({
+            verticesBase,
+            verticesCount: detail.verticesCount,
+            trianglesBase,
+            trianglesCount: detail.trianglesCount,
+        });
     }
 
     return {
@@ -174,43 +183,49 @@ async function main() {
     /* read input mesh (world-space positions + indices) */
 
     console.log('Reading walkable mesh from', INPUT);
-    const io = new NodeIO();
-    const doc = await io.read(resolve(INPUT));
-    const root = doc.getRoot();
-
     const positions: number[] = [];
     const indices: number[] = [];
 
-    for (const node of root.listNodes()) {
-        const mesh = node.getMesh();
-        if (!mesh) continue;
+    if (INPUT.endsWith('.bin')) {
+        // Packed collider (world-space positions + triangle indices).
+        const collider = unpackCollider(new Uint8Array(await readFile(resolve(INPUT))));
+        for (let i = 0; i < collider.positions.length; i++) positions.push(collider.positions[i]);
+        for (let i = 0; i < collider.indices.length; i++) indices.push(collider.indices[i]);
+    } else {
+        const io = new NodeIO();
+        const doc = await io.read(resolve(INPUT));
+        const root = doc.getRoot();
+        for (const node of root.listNodes()) {
+            const mesh = node.getMesh();
+            if (!mesh) continue;
 
-        // Bake the node's world transform so the navmesh lines up with the splat
-        // and the physics collider (which bakes transforms the same way).
-        const m = node.getWorldMatrix();
+            // Bake the node's world transform so the navmesh lines up with the splat
+            // and the physics collider (which bakes transforms the same way).
+            const m = node.getWorldMatrix();
 
-        for (const prim of mesh.listPrimitives()) {
-            const posAccessor = prim.getAttribute('POSITION');
-            const indexAccessor = prim.getIndices();
-            if (!posAccessor || !indexAccessor) continue;
+            for (const prim of mesh.listPrimitives()) {
+                const posAccessor = prim.getAttribute('POSITION');
+                const indexAccessor = prim.getIndices();
+                if (!posAccessor || !indexAccessor) continue;
 
-            const baseVertex = positions.length / 3;
+                const baseVertex = positions.length / 3;
 
-            const src = posAccessor.getArray();
-            if (!src) continue;
-            for (let i = 0; i < posAccessor.getCount(); i++) {
-                const x = src[i * 3];
-                const y = src[i * 3 + 1];
-                const z = src[i * 3 + 2];
-                positions.push(m[0] * x + m[4] * y + m[8] * z + m[12]);
-                positions.push(m[1] * x + m[5] * y + m[9] * z + m[13]);
-                positions.push(m[2] * x + m[6] * y + m[10] * z + m[14]);
-            }
+                const src = posAccessor.getArray();
+                if (!src) continue;
+                for (let i = 0; i < posAccessor.getCount(); i++) {
+                    const x = src[i * 3];
+                    const y = src[i * 3 + 1];
+                    const z = src[i * 3 + 2];
+                    positions.push(m[0] * x + m[4] * y + m[8] * z + m[12]);
+                    positions.push(m[1] * x + m[5] * y + m[9] * z + m[13]);
+                    positions.push(m[2] * x + m[6] * y + m[10] * z + m[14]);
+                }
 
-            const idx = indexAccessor.getArray();
-            if (!idx) continue;
-            for (let i = 0; i < idx.length; i++) {
-                indices.push(idx[i] + baseVertex);
+                const idx = indexAccessor.getArray();
+                if (!idx) continue;
+                for (let i = 0; i < idx.length; i++) {
+                    indices.push(idx[i] + baseVertex);
+                }
             }
         }
     }
@@ -219,10 +234,12 @@ async function main() {
 
     /* generate solo navmesh */
 
-    const cs = 0.05;
-    const ch = 0.05;
+    const cs = 0.04;
+    const ch = 0.02;
 
     const walkableRadiusWorld = 0.2;
+    // Match the character's stair step-up (walkStairsStepUp = 0.4 in src/character.ts) so
+    // the navmesh connects the same ledges the player can walk up, not fewer.
     const walkableClimbWorld = 0.2;
     const walkableHeightWorld = 1;
 
@@ -235,11 +252,11 @@ async function main() {
         walkableClimbWorld,
         walkableHeightVoxels: Math.ceil(walkableHeightWorld / ch),
         walkableHeightWorld,
-        walkableSlopeAngleDegrees: 45,
+        walkableSlopeAngleDegrees: 70,
         borderSize: 1,
         minRegionArea: 8,
         mergeRegionArea: 20,
-        maxSimplificationError: 1.3,
+        maxSimplificationError: 1,
         maxEdgeLength: 12,
         maxVerticesPerPoly: 6,
         detailSampleDistance: 6,
@@ -252,15 +269,16 @@ async function main() {
     /* flood-fill prune: keep only what's reachable from the seed poly. If the seed
        can't snap (e.g. moved off the deck), keep the full navmesh rather than fail. */
 
+    const PRUNE = true;
     const beforePolys = countPolys(navMesh);
     const seedResult = findNearestPoly(createFindNearestPolyResult(), navMesh, SEED, SEED_HALF_EXTENTS, DEFAULT_QUERY_FILTER);
     let pruned = navMesh;
-    if (!seedResult.success) {
+    if (PRUNE && !seedResult.success) {
         console.warn(
             `Prune seed [${SEED.join(', ')}] snapped to no poly within ±[${SEED_HALF_EXTENTS.join(', ')}] — ` +
                 'keeping the full navmesh (unpruned). Move the seed onto the walkable deck to prune.',
         );
-    } else {
+    } else if (PRUNE) {
         const { reachable } = floodFillNavMesh(navMesh, [seedResult.nodeRef]);
         pruned = pruneNavMesh(navMesh, new Set(reachable));
         console.log(

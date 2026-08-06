@@ -31,6 +31,10 @@ type Template = { scene: THREE.Object3D; clips: THREE.AnimationClip[]; fit: numb
 type View = {
     root: THREE.Object3D;
     mixer: THREE.AnimationMixer;
+    /** This companion's own SH irradiance (9 coefficients), injected into its cloned
+     *  materials' shaders. Updated in place each frame from the companion's probe sample,
+     *  so it's lit — normal-shaded — by the light where IT stands. */
+    sh: THREE.Vector3[];
     idle: THREE.AnimationAction | null;
     walk: THREE.AnimationAction | null;
     walkWeight: number; // 0 = idle, 1 = walking (smoothed)
@@ -93,6 +97,35 @@ function createView(visuals: CharacterVisuals, ch: Character): View | null {
 
     const root = cloneSkinned(tmpl.scene);
     root.scale.setScalar(tmpl.fit);
+
+    // Per-companion SH irradiance. SkeletonUtils.clone shares materials, so clone them and
+    // inject a per-object SH probe: its irradiance (normal-shaded, same as a scene
+    // LightProbe) is added on top of the fill lights, but sampled at THIS companion.
+    const sh = Array.from({ length: 9 }, () => new THREE.Vector3());
+    const inject = (m: THREE.Material): THREE.Material => {
+        const c = m.clone();
+        if ((c as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
+            c.onBeforeCompile = (shader) => {
+                shader.uniforms.uCompanionSH = { value: sh };
+                shader.fragmentShader =
+                    'uniform vec3 uCompanionSH[9];\n' +
+                    shader.fragmentShader.replace(
+                        '#include <lights_fragment_begin>',
+                        '#include <lights_fragment_begin>\n\tirradiance += shGetIrradianceAt( inverseTransformDirection( geometryNormal, viewMatrix ), uCompanionSH );',
+                    );
+            };
+            // Shared program across all companions (same code) — only the uniform differs.
+            c.customProgramCacheKey = () => 'companion-probe-sh';
+        }
+        return c;
+    };
+    root.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        const src = mesh.material;
+        mesh.material = Array.isArray(src) ? src.map(inject) : inject(src);
+    });
+
     visuals.scene.add(root);
 
     const mixer = new THREE.AnimationMixer(root);
@@ -116,6 +149,7 @@ function createView(visuals: CharacterVisuals, ch: Character): View | null {
     return {
         root,
         mixer,
+        sh,
         idle,
         walk,
         walkWeight: 0,
@@ -206,4 +240,13 @@ export function updateCharacterVisuals(visuals: CharacterVisuals, characters: Ch
             visuals.views.delete(id);
         }
     }
+}
+
+// Feed one companion its OWN probe SH (9 coefficients, e.g. from a sampled LightProbe),
+// scaled by `intensity`, into its shader — so it's normal-shaded by the light where IT
+// stands, not by one shared scene probe. No-op if the companion's view isn't built yet.
+export function setCompanionProbe(visuals: CharacterVisuals, id: string, coeffs: THREE.Vector3[], intensity: number): void {
+    const view = visuals.views.get(id);
+    if (!view) return;
+    for (let i = 0; i < 9; i++) view.sh[i].copy(coeffs[i]).multiplyScalar(intensity);
 }

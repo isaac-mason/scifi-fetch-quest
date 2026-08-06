@@ -90,7 +90,7 @@ The collider is packed to a compact binary with [packcat](https://www.npmjs.com/
 
 The probe bake spins up the Vite dev server, opens `bake.html` in **real headed Chrome**, because Spark needs a real GPU and headless Chromium renders splats faithlessly. It then captures the SH grid the page computes and writes the JSON. Re-run it whenever the ship splat or the `PROBE_*` grid config in `src/scene.ts` changes.
 
-> The runtime splat (`public/spaceship-lod.rad`) is a streaming-LOD `.rad` built from the source `.spz` with Spark's `build-lod` tool. That step isn't wired up as a script in this repo. The prebuilt `.rad` ships in `public/`.
+> The runtime splat (`public/<name>-lod.rad`) is a streaming-LOD `.rad` built from the source `.spz` with Spark's Rust `build-lod` tool — which ships in the Spark *source* repo, not the npm package. Run `pnpm build:lod [input.spz]` (defaults to `assets/scifi_world.spz`); set `SPARK_REPO` if your Spark checkout isn't at `~/Development/spark-gpu`. The prebuilt `.rad` ships in `public/`.
 
 ## Scene configuration
 

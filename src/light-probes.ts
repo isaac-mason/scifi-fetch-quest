@@ -91,6 +91,10 @@ function captureCubeFaces(
         renderer.render(scene, cam);
         renderer.render(scene, cam);
         const buf = new Uint8Array(size * size * 4);
+        // Spark leaves a PIXEL_PACK_BUFFER bound from its own GPU readback; if one is
+        // bound, readPixels writes into THAT buffer (an offset) instead of `buf`, so the
+        // faces come back all-zero (black probes, DC 0). Unbind it first.
+        (gl as WebGL2RenderingContext).bindBuffer((gl as WebGL2RenderingContext).PIXEL_PACK_BUFFER, null);
         gl.readPixels(0, 0, size, size, gl.RGBA, gl.UNSIGNED_BYTE, buf); // bottom-up (flipY handles it)
         faces.push(buf);
     }
