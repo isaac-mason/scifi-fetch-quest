@@ -4,6 +4,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 
 import { type Character, FOLLOWERS } from './characters';
+import { applyProbeVolume, isProbeVolumeReady } from './light-probes';
 
 const BASE = import.meta.env.BASE_URL;
 
@@ -31,10 +32,6 @@ type Template = { scene: THREE.Object3D; clips: THREE.AnimationClip[]; fit: numb
 type View = {
     root: THREE.Object3D;
     mixer: THREE.AnimationMixer;
-    /** This companion's own SH irradiance (9 coefficients), injected into its cloned
-     *  materials' shaders. Updated in place each frame from the companion's probe sample,
-     *  so it's lit — normal-shaded — by the light where IT stands. */
-    sh: THREE.Vector3[];
     idle: THREE.AnimationAction | null;
     walk: THREE.AnimationAction | null;
     walkWeight: number; // 0 = idle, 1 = walking (smoothed)
@@ -98,24 +95,18 @@ function createView(visuals: CharacterVisuals, ch: Character): View | null {
     const root = cloneSkinned(tmpl.scene);
     root.scale.setScalar(tmpl.fit);
 
-    // Per-companion SH irradiance. SkeletonUtils.clone shares materials, so clone them and
-    // inject a per-object SH probe: its irradiance (normal-shaded, same as a scene
-    // LightProbe) is added on top of the fill lights, but sampled at THIS companion.
-    const sh = Array.from({ length: 9 }, () => new THREE.Vector3());
+    // Light the companions from the baked probe VOLUME (light-probes.ts): SkeletonUtils.clone
+    // shares materials, so clone them and inject the volume sampler into each. The shader then
+    // adds the SH irradiance sampled at each FRAGMENT's world position on top of the fill
+    // lights — so a companion is lit by the local ship colour where it stands, and the light
+    // even varies across its own surface. Uniforms are shared globally (setProbeVolume), so
+    // there's no per-companion or per-frame CPU work.
     const inject = (m: THREE.Material): THREE.Material => {
         const c = m.clone();
-        if ((c as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
-            c.onBeforeCompile = (shader) => {
-                shader.uniforms.uCompanionSH = { value: sh };
-                shader.fragmentShader =
-                    'uniform vec3 uCompanionSH[9];\n' +
-                    shader.fragmentShader.replace(
-                        '#include <lights_fragment_begin>',
-                        '#include <lights_fragment_begin>\n\tirradiance += shGetIrradianceAt( inverseTransformDirection( geometryNormal, viewMatrix ), uCompanionSH );',
-                    );
-            };
-            // Shared program across all companions (same code) — only the uniform differs.
-            c.customProgramCacheKey = () => 'companion-probe-sh';
+        // Only inject the volume sampler if a probe grid actually loaded — otherwise the
+        // shader would sample an unbound sampler3D. No grid → companions keep the fill lights.
+        if ((c as THREE.MeshStandardMaterial).isMeshStandardMaterial && isProbeVolumeReady()) {
+            applyProbeVolume(c as THREE.MeshStandardMaterial);
         }
         return c;
     };
@@ -149,7 +140,6 @@ function createView(visuals: CharacterVisuals, ch: Character): View | null {
     return {
         root,
         mixer,
-        sh,
         idle,
         walk,
         walkWeight: 0,
@@ -240,13 +230,4 @@ export function updateCharacterVisuals(visuals: CharacterVisuals, characters: Ch
             visuals.views.delete(id);
         }
     }
-}
-
-// Feed one companion its OWN probe SH (9 coefficients, e.g. from a sampled LightProbe),
-// scaled by `intensity`, into its shader — so it's normal-shaded by the light where IT
-// stands, not by one shared scene probe. No-op if the companion's view isn't built yet.
-export function setCompanionProbe(visuals: CharacterVisuals, id: string, coeffs: THREE.Vector3[], intensity: number): void {
-    const view = visuals.views.get(id);
-    if (!view) return;
-    for (let i = 0; i < 9; i++) view.sh[i].copy(coeffs[i]).multiplyScalar(intensity);
 }

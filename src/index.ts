@@ -4,14 +4,20 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 import { EYE_HEIGHT, initCharacter, updateCharacter } from './character';
-import { initCharacterVisuals, loadCharacterVisuals, setCompanionProbe, updateCharacterVisuals } from './character-visuals';
+import { initCharacterVisuals, loadCharacterVisuals, updateCharacterVisuals } from './character-visuals';
 import { initCharacters, requestCharacterEmote, spawnCharacters, updateCharacters } from './characters';
 import { loadCollider } from './collider-load';
 import type { Collider } from './collider-schema';
 import { getMoveDirection, initFirstPersonControls, releaseFirstPersonControls, updateFirstPersonCamera } from './controls';
 import { createCrosshair, setCrosshairVisible, setInteractHint } from './crosshair';
-import { buildColliderDebug, buildProbeDebug, createDebugOverlay, updateCrowdDebug, updateDebugOverlay } from './debug';
-import { deserializeProbeGrid, type ProbeGrid, sampleProbeGrid } from './light-probes';
+import { attachProbeGizmos, buildColliderDebug, createDebugOverlay, updateCrowdDebug, updateDebugOverlay } from './debug';
+import {
+    buildProbeGizmos,
+    deserializeProbeGridFile,
+    type LoadedProbeGrid,
+    setProbeVolume,
+    setProbeVolumeIntensity,
+} from './light-probes';
 import { addPlayerAgent, initNavigation, loadNavigation, updateCrowd, updateNavigation, updatePlayerAgent } from './navigation';
 import { applyPerformance, initPerformance } from './performance';
 import { createSplatCollider, initPhysics, updatePhysics } from './physics';
@@ -22,7 +28,6 @@ import {
     COLLIDER_URL,
     HEMI_INTENSITY,
     MAX_DPR,
-    PROBE_INTENSITY,
     PROBE_URL,
     SPLAT_BRIGHTNESS,
     SPLAT_URL,
@@ -44,12 +49,9 @@ function init() {
     // shadows.ts (created below, once the renderer exists). Same colour/intensity as
     // before, so the shape lighting is unchanged.
 
-    // Companions are lit PER-INSTANCE by their own probe SH (injected into each companion's
-    // material — see character-visuals + the update loop), so this scene probe is not a
-    // light: kept at intensity 0 and sampled only to drive the debug readout swatch.
-    const envProbe = new THREE.LightProbe();
-    envProbe.intensity = 0;
-    scene.add(envProbe);
+    // Companions are lit by the baked probe VOLUME (light-probes.ts): the SH atlas is sampled
+    // per-fragment on the GPU (injected into each companion's material — see character-visuals),
+    // so there's no scene LightProbe and no per-frame CPU probe work here.
 
     // Near plane kept well inside the character's HEAD_CLEARANCE so the ceiling never
     // enters the near plane on a jump (otherwise it gets clipped and you see through it).
@@ -146,11 +148,10 @@ function init() {
         characters,
         characterVisuals,
         crosshair,
-        envProbe,
         fp,
         orbitActive: false, // tracks debug.orbitMode to detect mode switches
         collider: null as Collider | null,
-        probeGrid: null as ProbeGrid | null,
+        probe: null as LoadedProbeGrid | null,
     };
 }
 
@@ -179,6 +180,33 @@ async function load(state: State) {
 
     await loadNavigation(state.navigation);
 
+    // Load the precomputed probe VOLUME if present (baked offline: pnpm bake:probes). This
+    // must run BEFORE the companion materials compile (below) so their shaders bind the atlas
+    // texture on first compile. Without it, companions just use the flat fill lights (the
+    // material injection is gated on isProbeVolumeReady). Add one SH-shaded gizmo sphere per
+    // cell and wire it to the debug panel's "light probes" checkbox.
+    try {
+        const res = await fetch(PROBE_URL);
+        if (res.ok) {
+            const loaded = deserializeProbeGridFile(await res.text());
+            setProbeVolume(loaded);
+            // Live brightness multiply on the baked probe volume — retune companion lighting
+            // without a re-bake. Type `probeIntensity(1.5)` in the console; fold the value you
+            // like into PROBE_INTENSITY (scene.ts) + re-bake to make it permanent.
+            (window as unknown as { probeIntensity: (x: number) => void }).probeIntensity = setProbeVolumeIntensity;
+            state.probe = loaded;
+            const gizmos = buildProbeGizmos(loaded);
+            state.scene.add(gizmos);
+            attachProbeGizmos(state.debug, gizmos);
+            const r = loaded.resolution;
+            console.log(`probe volume: loaded ${r.x}×${r.y}×${r.z} grid from light-probes.json`);
+        } else {
+            console.warn('no light-probes.json — run `pnpm bake:probes` to create one');
+        }
+    } catch (err) {
+        console.warn('failed to load probe volume:', err);
+    }
+
     // Load the companion models, then spawn the crowd around the player's spawn.
     await loadCharacterVisuals(state.characterVisuals);
     const p = state.character.kcc.position;
@@ -186,28 +214,11 @@ async function load(state: State) {
 
     // Represent the player in the crowd so companions avoid us like any other agent.
     addPlayerAgent(state.navigation, [p[0], p[1], p[2]]);
-
-    // Load the precomputed probe grid if present (baked offline: pnpm bake:probes).
-    // Without it the companions just use the fill lights.
-    try {
-        const res = await fetch(PROBE_URL);
-        if (res.ok) {
-            state.probeGrid = deserializeProbeGrid(await res.text());
-            buildProbeDebug(state.debug, state.scene, state.probeGrid);
-            console.log(`probe grid: loaded ${state.probeGrid.positions.length} probes from light-probes.json`);
-        }
-    } catch {
-        // no probe file yet — fine, run a dev bake (press B) to create one
-    }
 }
 
 const _moveDir: Vec3 = [0, 0, 0];
 const _playerPos: Vec3 = [0, 0, 0];
-const _probeColor = new THREE.Color();
-const _companionProbe = new THREE.LightProbe(); // scratch: sampled per companion (not in the scene)
 const INTERACT_RANGE = 2; // metres — how far the interaction view ray reaches
-const SH_Y00 = 0.28209479; // DC SH coeff -> average radiance colour (for the readout)
-const PROBE_TORSO_Y = 0.65; // sample height above a companion's feet
 
 const _orbitDir = new THREE.Vector3();
 const ORBIT_PULLBACK = 5; // metres to pull the orbit camera back off the character's head
@@ -270,17 +281,9 @@ function update(state: State, dt: number, _time: number) {
         updateCrowdDebug(state.debug, Object.values(state.navigation.crowd.agents));
     }
 
-    // Light each companion from the baked probe grid sampled at ITS OWN torso, fed as SH
-    // irradiance into that companion's shader — so it's normal-shaded (like a scene probe)
-    // by the light where it actually stands, not one shared scene probe at the group average.
-    if (state.probeGrid) {
-        for (const ch of state.characters.list) {
-            sampleProbeGrid(state.probeGrid, ch.position[0], ch.position[1] + PROBE_TORSO_Y, ch.position[2], _companionProbe);
-            setCompanionProbe(state.characterVisuals, ch.id, _companionProbe.sh.coefficients, PROBE_INTENSITY);
-        }
-        // Drive the debug readout swatch from a representative sample at the player.
-        sampleProbeGrid(state.probeGrid, _playerPos[0], _playerPos[1] + PROBE_TORSO_Y, _playerPos[2], state.envProbe);
-    }
+    // Companion lighting from the baked probe volume is entirely on the GPU (the material
+    // samples the SH atlas per-fragment at each companion's world position — see
+    // character-visuals + light-probes), so there's no per-frame CPU probe work here.
 
     if (state.fp.enabled) {
         updateFirstPersonCamera(state.fp, state.character, dt);
@@ -301,13 +304,9 @@ function update(state: State, dt: number, _time: number) {
 
     // Push runtime perf settings (LOD budget, …) onto the renderer.
     applyPerformance(state.perf, state.spark);
-    // Feed the debug readout the lighting the companions are actually getting: the
-    // sampled scene probe's average (DC) radiance colour.
-    const c0 = state.envProbe.sh.coefficients[0];
-    _probeColor.setRGB(Math.max(0, c0.x) * SH_Y00, Math.max(0, c0.y) * SH_Y00, Math.max(0, c0.z) * SH_Y00);
+    const res = state.probe?.resolution;
     updateDebugOverlay(state.debug, state.camera, state.character, state.spark, {
-        count: state.probeGrid?.positions.length ?? 0,
-        color: _probeColor,
+        cells: res ? res.x * res.y * res.z : 0,
     });
     updateNavigation(state.navigation, state.scene, state.debug.showNavMesh);
     state.renderer.render(state.scene, state.camera);

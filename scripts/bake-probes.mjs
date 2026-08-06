@@ -19,7 +19,6 @@ import { chromium } from 'playwright-core';
 import { createServer } from 'vite';
 
 const OUT = 'public/light-probes.json';
-const BAKE_TIMEOUT_MS = 5 * 60 * 1000; // generous — a dense grid is a lot of captures
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const server = await createServer({ server: { host: '127.0.0.1' } });
@@ -76,9 +75,9 @@ try {
 
     await page.goto(bakeUrl, { waitUntil: 'load' });
 
-    const deadline = Date.now() + BAKE_TIMEOUT_MS;
-    while (!done && Date.now() < deadline) await sleep(500);
-    if (!done) error = `timed out after ${BAKE_TIMEOUT_MS / 1000}s`;
+    // No timeout: a dense volume grid is thousands of captures and can run for a long
+    // time. Just wait for the page to signal done (or error). Ctrl-C to abort.
+    while (!done) await sleep(500);
 } finally {
     await browser.close();
     await server.close();

@@ -9,6 +9,11 @@ import type { Vec3 } from 'mathcat';
 // so these resolve whether served from the domain root or a project subpath.
 const BASE = import.meta.env.BASE_URL;
 export const SPLAT_URL = `${BASE}scifi_world-lod.rad`;
+// The offline probe bake reads the source .spz WHOLE (non-paged) so every splat is
+// resident before each cube capture — no per-probe streaming/settle to babysit. It's
+// served straight from assets/ (dev-server only; assets/ isn't in the production build,
+// and the bake only runs in dev). The runtime still streams the LOD-paged .rad above.
+export const SPLAT_BAKE_URL = `${BASE}assets/scifi_world.spz`;
 // Hand-authored collision mesh (a plain glTF triangle mesh, world-space, identity
 // transform) — loaded at runtime and fed straight into physics/shadows/debug.
 export const COLLIDER_URL = `${BASE}scifi_world_collider.glb`;
@@ -20,34 +25,31 @@ export const NAVMESH_URL = `${BASE}navmesh.json`;
 // Collider bounds (world units): x[-10.5, 26.7], y[-1.0, 6.9], z[-36.0, 9.0]; floor ≈ y0.
 export const PROBE_URL = `${BASE}light-probes.json`;
 
-// --- Light-probe grid (baked offline: pnpm bake:probes, or press B in-app) ---
-// XZ extent to scatter probe samples over (~the collider bounds). Each sample snaps
-// onto the navmesh floor, then lifts to torso height. Shared by the runtime, the
-// in-app bake (index.ts), and the offline bake (src/bake.ts).
-export const PROBE_MIN_XZ: [number, number] = [-59, -36];
-export const PROBE_MAX_XZ: [number, number] = [37, 32];
-export const PROBE_SPACING = 1.0; // metres between XZ samples (denser = more local colour)
-// Multiple heights above the floor so lighting varies vertically inside a room
-// (floor bounce low, ceiling/fixtures high) instead of one probe per room. The
-// runtime blends in 3D, so a companion picks up the layer nearest its torso.
-export const PROBE_HEIGHTS = [0.4, 1.0, 1.7];
-// Keep a probe only if it's within this distance (m) of a collider triangle, so we
-// don't waste probes in open volume, far from any surface. This ship is compact —
-// everything's within ~1m of a surface — so the useful range is ~0.4-0.9m (lower =
-// hug surfaces tighter / fewer probes). The bake logs keep-counts per radius.
-export const PROBE_KEEP_RADIUS = 0.8;
-// Multiplier on the SH LightProbe irradiance lighting the companions (sampled at the player
-// each frame). SH shades by normal, so this reads as directional local light, not a flat
-// wash — raise for punchier ship colour on them, lower toward the flat ambient/hemi fill.
+// --- Light-probe VOLUME (baked offline: pnpm bake:probes) ---
+// A DENSE axis-aligned grid of order-2 SH irradiance probes, packed into a 3D texture and
+// sampled per-fragment by world position at runtime (src/light-probes.ts) — so the
+// companions' lighting varies both across the ship AND across each lit surface, replacing
+// the old one-blended-probe-per-companion CPU path. The grid box is fit at bake time to the
+// COLLIDER's AABB (src/collider-load.ts) — the hand-authored collision mesh already bounds
+// the playable interior tightly, so it's a cleaner box than fitting to noisy splat centres.
+// EVERY cell is captured (a volume can't have holes; a cell inside geometry just captures
+// dark). Intensity + saturation are baked straight into the atlas — the shader has no runtime
+// multiplier — so changing either means a re-bake.
+export const PROBE_SPACING = 1.5; // metres between cells on every axis. Collider AABB is ~37×8×45m,
+// so 1.5m ≈ 25×6×31 ≈ 4.6k cells — a finishable full-splat bake. Lower for finer GI (bigger
+// atlas, and the bake time climbs fast: each cell is 6 cube renders over the whole splat).
+// Metres to pull the grid in from the collider AABB on every side, so edge cells sit just
+// inside the hull rather than exactly on it. 0 = flush to the box.
+export const PROBE_BOX_INSET = 0.25;
+// Multiplier baked into every probe's SH (the volume shader has no runtime multiplier). Raw
+// diffuse irradiance is dim; >1 makes the ship's local colour read on the companions. Raise
+// for punchier ship colour, lower toward the flat ambient/hemi fill. Change → re-bake.
 export const PROBE_INTENSITY = 3.5;
-
-// Saturation boost on the probe lighting the companions, baked into the grid by the
-// offline bake (pnpm bake:probes → light-probes.json). The probe averages the whole
-// hemisphere, so the ship's grey surfaces wash the localized emissive primaries
-// (magenta/cyan/green) toward grey; >1 amplifies the captured chroma so those colours
-// read as a companion moves past a light. 1 = raw (dull, greyish); ~2 = punchy.
-// Independent of PROBE_INTENSITY (brightness) — only colourfulness. Change this, then
-// rebake for it to take effect (the committed grid records the value it was baked at).
+// Saturation boost baked into every probe (see saturateSphericalHarmonics). A diffuse probe
+// integrates the whole hemisphere, so the ship's grey surfaces wash the localized emissive
+// primaries (magenta/cyan/green) toward grey; >1 amplifies the captured chroma so those
+// colours read as a companion moves past a light. 1 = raw (dull, greyish); ~2 = punchy.
+// Independent of PROBE_INTENSITY (brightness) — only colourfulness. Change → re-bake.
 export const PROBE_SATURATION = 2.0;
 
 // --- Companion fill lighting (affects the non-splat meshes only; splats are

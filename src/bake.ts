@@ -1,35 +1,34 @@
 /**
- * Offline light-probe bake harness.
+ * Offline light-probe VOLUME bake harness.
  *
- * A deliberately minimal scene — the ship splat + the navmesh only. NO characters,
- * physics, controls, debug or fill lights — so the probe capture integrates JUST
- * the ship environment. The splat is loaded with `nonLod: true`, which decodes the
- * WHOLE splat into a non-paged PackedSplats set: `splat.initialized` resolving is
- * then a real "everything is in memory" guarantee, instead of the flaky,
- * view-culled `spark.activeSplats` counter we can't trust.
+ * A deliberately minimal scene — JUST the ship splat — so each probe capture integrates
+ * only the environment (no characters, fill lights, or debug). The .spz is loaded with
+ * `nonLod: true`, decoding the WHOLE splat into a non-paged set, so `splat.initialized`
+ * resolving is a real "everything is in memory" guarantee — no per-probe streaming.
  *
- * scripts/bake-probes.mjs drives this page headed in real Chrome (Spark needs a real
- * GPU) and writes the result to public/light-probes.json via window.__saveProbes.
- * It also dumps a raw env-capture strip (window.__saveDebugPng) so we can eyeball
- * exactly what Spark captured. Opened manually in a browser it downloads instead.
+ * The grid box is fit to the COLLIDER's AABB (the hand-authored collision mesh bounds the
+ * playable interior tightly), inset a little, then filled with a DENSE lattice: every cell
+ * is captured as an order-2 SH probe, packed into a 3D-texture atlas, and shipped as
+ * light-probes.json. Intensity + saturation are baked straight into the SH.
+ *
+ * scripts/bake-probes.mjs drives this page headed in real Chrome (Spark needs a real GPU)
+ * and writes the result to public/light-probes.json via window.__saveProbes. It also dumps a
+ * raw six-face env-capture strip (window.__saveDebugPng) to eyeball what Spark captured.
+ * Opened manually in a browser it downloads instead.
  */
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
-import type { Vec3 } from 'mathcat';
 import * as THREE from 'three';
 
 import { loadCollider } from './collider-load';
-import type { Collider } from './collider-schema';
-import { bakeProbeGrid, captureCubeFacesAt, serializeProbeGrid } from './light-probes';
-import { initNavigation, loadNavigation, snapToNavMesh } from './navigation';
+import { bakeProbeGrid, buildDenseLattice, captureCubeFacesAt, packProbeAtlas, serializeProbeGridFile } from './light-probes';
 import {
+    CAMERA_TARGET,
     COLLIDER_URL,
-    PROBE_HEIGHTS,
-    PROBE_KEEP_RADIUS,
-    PROBE_MAX_XZ,
-    PROBE_MIN_XZ,
+    PROBE_BOX_INSET,
+    PROBE_INTENSITY,
     PROBE_SATURATION,
     PROBE_SPACING,
-    SPLAT_URL,
+    SPLAT_BAKE_URL,
 } from './scene';
 
 declare global {
@@ -40,31 +39,6 @@ declare global {
     }
 }
 
-const waitMs = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-// Distance (m) from `pos` to the nearest collider triangle — the proximity metric
-// for dropping probes that sit far from any ship surface.
-function distToCollider(pos: Vec3, collider: Collider): number {
-    const { positions, indices } = collider;
-    const p = _v0.set(pos[0], pos[1], pos[2]);
-    let best = Infinity;
-    for (let i = 0; i < indices.length; i += 3) {
-        const ia = indices[i] * 3;
-        const ib = indices[i + 1] * 3;
-        const ic = indices[i + 2] * 3;
-        _tri.a.set(positions[ia], positions[ia + 1], positions[ia + 2]);
-        _tri.b.set(positions[ib], positions[ib + 1], positions[ib + 2]);
-        _tri.c.set(positions[ic], positions[ic + 1], positions[ic + 2]);
-        _tri.closestPointToPoint(p, _closest);
-        const d2 = p.distanceToSquared(_closest);
-        if (d2 < best) best = d2;
-    }
-    return Math.sqrt(best);
-}
-const _v0 = new THREE.Vector3();
-const _closest = new THREE.Vector3();
-const _tri = new THREE.Triangle();
-
 function downloadText(filename: string, text: string): void {
     const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
     const a = document.createElement('a');
@@ -74,11 +48,16 @@ function downloadText(filename: string, text: string): void {
     URL.revokeObjectURL(url);
 }
 
-// Capture the six per-face renders at `pos` (raw — no colour/flip/SH) and lay them
-// out in a horizontal strip data URL: exactly what the SH sees, so we can confirm
-// all six faces are now populated.
-function captureFaceStrip(renderer: THREE.WebGLRenderer, scene: THREE.Scene, pos: Vec3, faceSize: number): string {
-    const { faces, size } = captureCubeFacesAt(renderer, scene, pos, faceSize);
+// Capture the six per-face renders at `pos` (raw — no colour/flip/SH) and lay them out in a
+// horizontal strip data URL: exactly what the SH sees, so we can confirm all six faces are
+// populated + distinct.
+async function captureFaceStrip(
+    renderer: THREE.WebGLRenderer,
+    scene: THREE.Scene,
+    pos: THREE.Vector3,
+    faceSize: number,
+): Promise<string> {
+    const { faces, size } = await captureCubeFacesAt(renderer, scene, pos, faceSize);
     const canvas = document.createElement('canvas');
     canvas.width = size * faces.length;
     canvas.height = size;
@@ -93,103 +72,105 @@ function captureFaceStrip(renderer: THREE.WebGLRenderer, scene: THREE.Scene, pos
 }
 
 async function main(): Promise<void> {
-    // Square canvas at the capture resolution: we read the canvas framebuffer back
-    // per face, so its size IS the face size. pixelRatio 1 so drawing buffer == size.
-    const FACE_SIZE = 256;
+    // Square canvas at the capture resolution: we render each cube face to the canvas and read
+    // the framebuffer back, so its size IS the face size. 128 is plenty for order-2 SH.
+    const FACE_SIZE = 128;
     const scene = new THREE.Scene();
     const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
     renderer.setPixelRatio(1);
     renderer.setSize(FACE_SIZE, FACE_SIZE);
     document.body.appendChild(renderer.domElement);
     const camera = new THREE.PerspectiveCamera(60, 1, 0.05, 1000);
-    camera.position.set(-11, 5, -2); // scifi_world collider centre (warms up streaming)
+    camera.position.set(CAMERA_TARGET[0], CAMERA_TARGET[1], CAMERA_TARGET[2]);
 
     const spark = new SparkRenderer({ renderer, coneFoveate: 0 });
     scene.add(spark);
 
-    // The .rad is a paged LOD file (nonLod decodes 0 splats for it), so we can't
-    // fully preload it — instead we render at full detail (lod off, no foveation)
-    // and rely on a per-probe stream-then-resettle in the capture (settleMs below)
-    // so each probe's pages are resident before it's read.
-    const splat = new SplatMesh({ url: encodeURI(SPLAT_URL), lod: false, coneFoveate: 0 });
+    // nonLod: true decodes the whole source .spz into a non-paged PackedSplats set, so
+    // `splat.initialized` resolving means every splat is resident — exactly the guarantee the
+    // bake needs. We bake from the .spz, not the runtime .rad, precisely for full residency.
+    const splat = new SplatMesh({ url: encodeURI(SPLAT_BAKE_URL), nonLod: true });
     scene.add(splat);
     await splat.initialized;
-    const total = splat.numSplats;
-    console.log(`bake: splat has ${total.toLocaleString()} splats; streaming toward residency…`);
+    console.log(`bake: splat fully resident — ${splat.numSplats.toLocaleString()} splats`);
 
-    // Drive frames until residency plateaus. On a real GPU this climbs toward
-    // `total`; the logged ratio makes it obvious if it stalls far below.
-    let last = -1;
-    let stable = 0;
-    for (let i = 0; i < 600 && stable < 20; i++) {
+    // Warm-up: render real frames (yielding to the event loop each time) so Spark builds its
+    // splat instances + first sort before we start capturing. The per-face settle in
+    // captureCubeFaces handles the rest; this just primes the pump.
+    for (let i = 0; i < 30; i++) {
         renderer.render(scene, camera);
-        await waitMs(50);
-        const a = spark.activeSplats;
-        if (a === last) stable++;
-        else {
-            stable = 0;
-            last = a;
-        }
+        await new Promise((r) => requestAnimationFrame(() => r(undefined)));
     }
-    console.log(
-        `bake: resident ${spark.activeSplats.toLocaleString()} / ${total.toLocaleString()} (view-culled; per-probe settle covers the rest)`,
-    );
 
-    // Navmesh drives probe placement (walkable floor only).
-    const navigation = initNavigation();
-    await loadNavigation(navigation);
-
-    // Collider drives the proximity filter — only keep probes near a ship surface.
+    // Fit the probe box to the collider's AABB, then inset so edge cells sit just inside the
+    // hull. The collider is the hand-authored collision mesh, so its bounds already frame the
+    // playable interior — no splat-occupancy fitting needed.
     const collider = await loadCollider(COLLIDER_URL);
+    const bbox = new THREE.Box3().setFromArray(collider.positions);
+    const min = bbox.min.clone().addScalar(PROBE_BOX_INSET);
+    const max = bbox.max.clone().addScalar(-PROBE_BOX_INSET);
+    const fmt = (v: THREE.Vector3) => `(${v.x.toFixed(2)}, ${v.y.toFixed(2)}, ${v.z.toFixed(2)})`;
+    console.log(`bake: collider AABB ${fmt(bbox.min)} -> ${fmt(bbox.max)}`);
+    console.log(`bake: probe box    ${fmt(min)} -> ${fmt(max)}  (inset ${PROBE_BOX_INSET}m)`);
 
-    // Snap the XZ grid onto the navmesh floor, then place a probe at each
-    // PROBE_HEIGHTS layer above it (vertical variation inside rooms).
-    const candidates: Vec3[] = [];
-    for (let x = PROBE_MIN_XZ[0]; x <= PROBE_MAX_XZ[0]; x += PROBE_SPACING) {
-        for (let z = PROBE_MIN_XZ[1]; z <= PROBE_MAX_XZ[1]; z += PROBE_SPACING) {
-            const out: Vec3 = [0, 0, 0];
-            if (!snapToNavMesh(navigation, [x, 0, z], out)) continue;
-            for (const h of PROBE_HEIGHTS) candidates.push([out[0], out[1] + h, out[2]]);
-        }
+    // DENSE regular grid: every cell is baked (a 3D-texture volume can't ship holes — a void
+    // cell just captures dark). Fixed resolution + cell order match the atlas packer; the
+    // effective box is what the runtime shader samples against.
+    const { positions, nx, ny, nz, box } = buildDenseLattice(min, max, PROBE_SPACING);
+    console.log(`bake: dense ${nx}x${ny}x${nz} = ${positions.length} probes on a ${PROBE_SPACING}m grid`);
+
+    // Guard: a mis-fit box blows up a DENSE grid fast (nx*ny*nz). Bail loudly instead — raise
+    // PROBE_SPACING to coarsen the grid, or shrink the collider/inset.
+    const MAX_PROBES = 20000;
+    if (positions.length > MAX_PROBES) {
+        throw new Error(
+            `dense grid is ${nx}x${ny}x${nz} = ${positions.length} cells (> ${MAX_PROBES}). ` +
+                `The box ${fmt(min)}->${fmt(max)} is probably too big — raise PROBE_SPACING in src/scene.ts.`,
+        );
     }
-    // Distance-to-collider per candidate; drop those farther than PROBE_KEEP_RADIUS.
-    const dists = candidates.map((c) => distToCollider(c, collider));
-    const positions = candidates.filter((_, i) => dists[i] <= PROBE_KEEP_RADIUS);
-    // Show how many would survive at a range of radii, so PROBE_KEEP_RADIUS is easy
-    // to tune from data.
-    const buckets = [0.4, 0.6, 0.8, 1.0, 1.25, 1.5, 2.0].map((r) => `${r}m:${dists.filter((d) => d <= r).length}`).join('  ');
-    console.log(`bake: keep-count by radius -> ${buckets}  (of ${candidates.length} candidates)`);
-    console.log(
-        `bake: ${positions.length} probe samples kept at PROBE_KEEP_RADIUS=${PROBE_KEEP_RADIUS}m (${PROBE_HEIGHTS.length} heights)`,
-    );
 
-    // Diagnostic: dump the raw six per-face renders of a central probe so we can
-    // confirm all six faces are populated + distinct.
+    // Diagnostic: dump the raw six per-face renders of a central probe so we can confirm all
+    // six faces are populated + distinct.
     if (positions.length > 0) {
         const mid = positions[Math.floor(positions.length / 2)];
-        const strip = captureFaceStrip(renderer, scene, mid, FACE_SIZE);
+        const strip = await captureFaceStrip(renderer, scene, mid, FACE_SIZE);
         if (window.__saveDebugPng) await window.__saveDebugPng(strip);
-        console.log(`bake: dumped raw env faces at [${mid.map((v) => v.toFixed(1)).join(', ')}]`);
+        console.log(
+            `bake: dumped raw env faces at [${mid
+                .toArray()
+                .map((v) => v.toFixed(1))
+                .join(', ')}]`,
+        );
     }
 
-    // Six per-face renderer.render() captures per probe. The blend radius spans the
-    // XZ spacing and the vertical layer gap so 3D sampling stays smooth.
-    // Bake PROBE_SATURATION straight into the grid so the shipped JSON carries the
-    // chroma boost (runtime then tops up to a no-op). Retune it live first, then rebake.
-    const grid = await bakeProbeGrid(renderer, scene, positions, {
+    // Six per-face canvas renders per probe. Bake PROBE_SATURATION straight into the SH so the
+    // shipped atlas carries the chroma boost. Coefficients come back in `positions` order.
+    const probeSH = await bakeProbeGrid(renderer, scene, positions, {
         resolution: FACE_SIZE,
-        blendRadius: PROBE_SPACING * 1.6,
         saturation: PROBE_SATURATION,
+        onProgress: (done, total) => {
+            if (done % 64 === 0 || done === total) console.log(`bake: ${done}/${total} probes`);
+        },
     });
-    const dc = grid.sh.map((sh) => sh.coefficients[0].length());
-    console.log(
-        `bake: done ${grid.positions.length} probes, DC min ${Math.min(...dc).toFixed(3)} max ${Math.max(...dc).toFixed(3)}`,
-    );
 
-    const json = serializeProbeGrid(grid);
+    // Bake the runtime intensity into the coefficients too: the volume shader has no per-probe
+    // multiplier (unlike the old per-mesh LightProbe path), so it must live in the atlas.
+    for (const sh of probeSH) for (const c of sh.coefficients) c.multiplyScalar(PROBE_INTENSITY);
+
+    const dc = probeSH.map((sh) => sh.coefficients[0].length());
+    console.log(`bake: done ${probeSH.length} probes, DC min ${Math.min(...dc).toFixed(3)} max ${Math.max(...dc).toFixed(3)}`);
+
+    // Pack into the 3D-texture atlas layout the volume shader reads (see light-probes.ts). No
+    // debris in this scene, so no seed points.
+    const atlas = packProbeAtlas(probeSH, nx, ny, nz);
+    const json = serializeProbeGridFile(atlas, box, {
+        intensity: PROBE_INTENSITY,
+        saturation: PROBE_SATURATION,
+        seedPositions: [],
+    });
     if (window.__saveProbes) await window.__saveProbes(json);
     else downloadText('light-probes.json', json);
-    console.log('bake: saved light-probes.json');
+    console.log(`bake: saved light-probes.json (${(json.length / 1024).toFixed(0)} KB, ${nx}x${ny}x${nz} atlas)`);
     document.title = 'bake complete';
 }
 

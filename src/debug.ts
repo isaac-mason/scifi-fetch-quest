@@ -1,7 +1,6 @@
 import type { SparkRenderer } from '@sparkjsdev/spark';
 import { debug as ccDebug, kcc, MotionType, rigidBody, type World } from 'crashcat';
 import * as THREE from 'three';
-import { LightProbeHelper } from 'three/addons/helpers/LightProbeHelper.js';
 
 import type { Character } from './character';
 import type { Performance } from './performance';
@@ -28,9 +27,10 @@ export type DebugOverlay = {
      * on/off with the "collider debug" checkbox.
      */
     colliderLines: THREE.LineSegments;
-    /** Whether the light-probe grid gizmos are drawn (toggled by the checkbox). */
+    /** Whether the light-probe volume gizmos are drawn (toggled by the checkbox). */
     showProbes: boolean;
-    /** One THREE.LightProbeHelper per baked probe (SH-shaded sphere). Built on bake. */
+    /** One SH-shaded sphere per probe cell (built by light-probes.buildProbeGizmos, attached
+     *  via attachProbeGizmos once the volume loads). */
     probeGroup: THREE.Group | null;
     /** Whether the crowd-agent cylinders are drawn (toggled by the checkbox). */
     showCrowd: boolean;
@@ -156,10 +156,8 @@ export function createDebugOverlay(perf: Performance): DebugOverlay {
     return overlay;
 }
 
-// Live light-probe readout: how many probes were baked, and the R/G/B of the
-// currently-sampled scene probe (the lighting the companions are actually getting
-// this frame). Near-zero = the capture came back black.
-export type ProbeReadout = { count: number; color: THREE.Color };
+// Live light-probe readout: how many cells the loaded probe volume holds (nx*ny*nz).
+export type ProbeReadout = { cells: number };
 
 export function updateDebugOverlay(
     overlay: DebugOverlay,
@@ -180,49 +178,15 @@ export function updateDebugOverlay(
         `cam     ${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}\n` +
         `feet    ${c[0].toFixed(2)}, ${c[1].toFixed(2)}, ${c[2].toFixed(2)}  (${ground})\n` +
         `splats  ${active} / ${max}  (lod x${spark.lodSplatScale.toFixed(2)})`;
-    if (probe) {
-        text += `\nprobes  ${probe.count}  rgb ${probe.color.r.toFixed(2)}, ${probe.color.g.toFixed(2)}, ${probe.color.b.toFixed(2)}`;
-    }
+    if (probe) text += `\nprobes  ${probe.cells} cells`;
     overlay.text.textContent = text;
 }
 
-const PROBE_GIZMO_SIZE = 0.15; // radius (m) of each probe helper sphere
-
-// Build (or rebuild) the light-probe grid gizmo: one THREE.LightProbeHelper per
-// probe (a sphere shaded by that probe's actual SH, so you see the directional
-// lighting — bright side / dark side — not just an average). A fully dark sphere
-// means that probe captured nothing (buried in geometry, or a truly unlit spot).
-// The backing LightProbes are NOT added to the scene, so they don't light anything;
-// the helpers just visualize them. Call once after the probe grid bakes/loads.
-export function buildProbeDebug(
-    overlay: DebugOverlay,
-    scene: THREE.Scene,
-    probes: { positions: ArrayLike<number>[]; sh: THREE.SphericalHarmonics3[] },
-): void {
-    if (overlay.probeGroup) {
-        scene.remove(overlay.probeGroup);
-        overlay.probeGroup.traverse((o) => {
-            if (o instanceof LightProbeHelper) o.dispose();
-        });
-        overlay.probeGroup = null;
-    }
-
-    const n = probes.positions.length;
-    if (n === 0) return;
-
-    const group = new THREE.Group();
-    for (let i = 0; i < n; i++) {
-        const p = probes.positions[i];
-        const probe = new THREE.LightProbe(); // detached (not added to scene → lights nothing)
-        probe.sh.copy(probes.sh[i]);
-        probe.position.set(p[0], p[1], p[2]);
-        const helper = new LightProbeHelper(probe, PROBE_GIZMO_SIZE);
-        helper.frustumCulled = false;
-        group.add(helper);
-    }
-    group.visible = overlay.showProbes;
-    scene.add(group);
+// Register the probe-gizmo group (built by light-probes.buildProbeGizmos) with the panel so
+// the "light probes" checkbox controls its visibility. The caller adds the group to the scene.
+export function attachProbeGizmos(overlay: DebugOverlay, group: THREE.Group): void {
     overlay.probeGroup = group;
+    group.visible = overlay.showProbes;
 }
 
 // Build the static collider wireframe once. The colliders (floor box + level triangle
