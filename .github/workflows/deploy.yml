@@ -40,9 +40,6 @@ jobs:
 
       - name: Build
         run: pnpm build
-        env:
-          # Served from the project subpath on GitHub Pages; vite.config.ts reads this.
-          BASE_PATH: /clingy-space-friends/
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

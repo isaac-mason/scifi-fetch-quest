@@ -5,8 +5,8 @@ import type { Vec3 } from 'mathcat';
 // constants stay in their own files.
 
 // --- Assets (served from public/; see the README's asset pipeline) ---
-// BASE_URL is '/' in dev and '/<repo>/' for the GitHub Pages build (vite.config.ts),
-// so these resolve whether served from the domain root or a project subpath.
+// BASE_URL is the vite `base` ('./' — relative; see vite.config.ts), so these asset paths resolve
+// relative to the page and work at the domain root OR any project subpath, no config needed.
 const BASE = import.meta.env.BASE_URL;
 export const SPLAT_URL = `${BASE}scifi_world-lod.rad`;
 // The offline probe bake reads the source .spz WHOLE (non-paged) so every splat is

@@ -1,8 +1,8 @@
 import { defineConfig } from 'vite';
 
-// Local dev serves from '/'. The GitHub Pages workflow sets BASE_PATH to
-// '/<repo>/' so the app — and its absolute asset URLs (via import.meta.env.BASE_URL
-// in src/scene.ts) — resolve correctly under the project subpath.
+// Relative base: built asset URLs (and import.meta.env.BASE_URL, which src/scene.ts prepends to the
+// runtime asset paths) resolve RELATIVE to the page. So the same build works at the domain root or
+// under any project subpath (e.g. GitHub Pages /<repo>/) with no repo-name config.
 export default defineConfig({
-    base: process.env.BASE_PATH ?? '/',
+    base: './',
 });

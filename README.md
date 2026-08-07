@@ -109,7 +109,7 @@ Press backtick (`` ` ``) for a debug overlay with a live readout (camera/feet po
 
 ## Deploy (GitHub Pages)
 
-`vite.config.ts` reads a `BASE_PATH` env var (default `/`). To serve under a project subpath, build with it set (e.g. `BASE_PATH=/scifi-fetch-quest/ pnpm build`) so the app and its absolute asset URLs (via `import.meta.env.BASE_URL` in `src/scene.ts`) resolve correctly. Update the value if you rename the repo.
+`vite.config.ts` uses a **relative base** (`base: './'`), so the build's asset URLs — and the runtime paths in `src/scene.ts` (via `import.meta.env.BASE_URL`) — resolve relative to the page. The same `pnpm build` works at the domain root or under any project subpath (e.g. `https://user.github.io/<repo>/`) with no config, so renaming the repo needs no change. The included workflow (`.github/workflows/deploy.yml`) just runs `pnpm build` and publishes `dist/`.
 
 ## License
 
