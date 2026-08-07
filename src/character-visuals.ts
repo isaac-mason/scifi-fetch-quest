@@ -11,7 +11,7 @@ const BASE = import.meta.env.BASE_URL;
 // Fit every model to this world height (feet-to-crown), regardless of each model's
 // native (much larger) authored size. Purely visual — the agent collision height
 // (FOLLOW_HEIGHT) is independent, so this only changes how big the models look.
-const TARGET_HEIGHT = 1;
+export const TARGET_HEIGHT = 1; // feet-to-crown world height of the crew models (used to place the head marker)
 
 // Model forward axis vs travel direction (radians). If the companions walk
 // backwards, flip this to Math.PI.

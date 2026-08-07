@@ -52,6 +52,10 @@ export type FirstPersonControls = {
     enabled: boolean;
     /** Is the pointer currently locked (mouse driving the look)? */
     locked: boolean;
+    /** When true, the controller keeps pointer lock but stops driving look/movement/interact
+     *  — so an overlay (e.g. the dialogue radial) can read the raw mouse deltas instead.
+     *  Toggle via setControlsPaused. */
+    paused: boolean;
     yaw: number;
     pitch: number;
     input: {
@@ -105,6 +109,7 @@ export function initFirstPersonControls(camera: THREE.PerspectiveCamera, domElem
         domElement,
         enabled: true,
         locked: false,
+        paused: false,
         yaw,
         pitch,
         input: { forward: false, backward: false, left: false, right: false, jump: false, sprint: false, interact: false },
@@ -124,7 +129,7 @@ export function initFirstPersonControls(camera: THREE.PerspectiveCamera, domElem
 
     // Click the canvas to capture the mouse; once captured, a left-click interacts.
     domElement.addEventListener('click', () => {
-        if (!controls.enabled) return;
+        if (!controls.enabled || controls.paused) return;
         if (controls.locked) controls.input.interact = true;
         else domElement.requestPointerLock();
     });
@@ -134,7 +139,7 @@ export function initFirstPersonControls(camera: THREE.PerspectiveCamera, domElem
     });
 
     document.addEventListener('mousemove', (e) => {
-        if (!controls.locked) return;
+        if (!controls.locked || controls.paused) return;
         controls.yaw -= e.movementX * LOOK_SENSITIVITY;
         controls.pitch -= e.movementY * LOOK_SENSITIVITY;
         controls.pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, controls.pitch));
@@ -171,7 +176,7 @@ export function initFirstPersonControls(camera: THREE.PerspectiveCamera, domElem
     };
 
     window.addEventListener('keydown', (e) => {
-        if (!controls.enabled) return;
+        if (!controls.enabled || controls.paused) return;
         if (setKey(e.code, true)) e.preventDefault();
     });
     window.addEventListener('keyup', (e) => {
@@ -179,6 +184,22 @@ export function initFirstPersonControls(camera: THREE.PerspectiveCamera, domElem
     });
 
     return controls;
+}
+
+// Pause/resume the controller WITHOUT releasing pointer lock: freezes look, movement and
+// interact so an overlay can consume the mouse (see the dialogue radial). Clears held movement
+// on pause so you don't keep drifting. The pointer stays locked, so mouse deltas still flow —
+// the overlay reads them via its own listeners.
+export function setControlsPaused(controls: FirstPersonControls, paused: boolean): void {
+    controls.paused = paused;
+    if (paused) {
+        controls.input.forward = false;
+        controls.input.backward = false;
+        controls.input.left = false;
+        controls.input.right = false;
+        controls.input.jump = false;
+        controls.input.sprint = false;
+    }
 }
 
 // Release the mouse and clear held keys (e.g. when switching to orbit mode).
@@ -191,6 +212,28 @@ export function releaseFirstPersonControls(controls: FirstPersonControls): void 
     controls.input.jump = false;
     controls.input.sprint = false;
     controls.input.interact = false;
+}
+
+// Smoothly turn the view to look at a world point (used during dialogue / the launch, while the
+// controller is paused). Lerps yaw/pitch toward the aim each frame, so when control resumes the
+// mouse picks up from wherever it settled — no snap. Matches updateFirstPersonCamera's angle
+// convention (forward = (-sin yaw, …, -cos yaw), pitch on the up axis).
+const FACE_RATE = 6; // per-second approach toward the target look angles
+export function faceFirstPersonToward(controls: FirstPersonControls, character: Character, target: Vec3, dt: number): void {
+    const ex = character.kcc.position[0];
+    const ey = character.kcc.position[1] + EYE_HEIGHT;
+    const ez = character.kcc.position[2];
+    const dx = target[0] - ex;
+    const dy = target[1] - ey;
+    const dz = target[2] - ez;
+    const len = Math.hypot(dx, dy, dz) || 1;
+    const targetYaw = Math.atan2(-dx, -dz);
+    const targetPitch = Math.asin(Math.max(-1, Math.min(1, dy / len)));
+    const k = Math.min(1, FACE_RATE * dt);
+    // Shortest-arc yaw approach so we never spin the long way round.
+    const dYaw = Math.atan2(Math.sin(targetYaw - controls.yaw), Math.cos(targetYaw - controls.yaw));
+    controls.yaw += dYaw * k;
+    controls.pitch += (targetPitch - controls.pitch) * k;
 }
 
 // Build the world-space horizontal move direction from yaw + the held keys.

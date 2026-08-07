@@ -5,16 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="An interactive Gaussian-splat spaceship scene."
+      content="A walkable Gaussian-splat spaceship whodunit: find out who took the keys."
     />
-    <title>clingy-space-friends</title>
+    <title>scifi-fetch-quest</title>
     <!-- Loader styles inlined so the overlay is styled on first paint (no flash
          of unstyled content before the bundled CSS loads). -->
     <style>
       #loading {
         position: fixed;
         inset: 0;
-        z-index: 10;
+        z-index: 2000; /* above the HUD (z 1000-1002) so nothing peeks over the loader */
         display: flex;
         align-items: center;
         justify-content: center;

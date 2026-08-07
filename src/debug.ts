@@ -15,6 +15,16 @@ const GROUND_STATE_NAMES: Record<number, string> = {
 export type DebugOverlay = {
     element: HTMLDivElement;
     text: HTMLDivElement;
+    /** Live readout value spans, built once and updated each frame by updateDebugOverlay.
+     *  cam/feet are click-to-copy — clicking copies the vector as `[x, y, z]`. */
+    readout: {
+        mode: HTMLSpanElement;
+        cam: HTMLSpanElement;
+        feet: HTMLSpanElement;
+        ground: HTMLSpanElement;
+        splats: HTMLSpanElement;
+        probes: HTMLSpanElement;
+    };
     /** Whether the text panel is shown (toggled with the backtick key). */
     enabled: boolean;
     /** Whether the navmesh wireframe is drawn (toggled by the checkbox). */
@@ -74,6 +84,72 @@ function createRange(
     return wrapper;
 }
 
+// Copy text to the clipboard (navigator.clipboard, with an execCommand fallback for
+// non-secure contexts). Returns whether it succeeded.
+async function copyToClipboard(text: string): Promise<boolean> {
+    try {
+        await navigator.clipboard.writeText(text);
+        return true;
+    } catch {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+        document.body.appendChild(ta);
+        ta.select();
+        let ok = false;
+        try {
+            ok = document.execCommand('copy');
+        } catch {
+            ok = false;
+        }
+        document.body.removeChild(ta);
+        return ok;
+    }
+}
+
+// Build the monospace readout panel: fixed labels with per-value spans updated each frame.
+// The cam/feet vectors are click-to-copy — clicking copies `[x, y, z]` (ready to paste into a
+// Vec3 constant in scene.ts) and briefly flashes the value. Built once; the spans persist so
+// the copy flash survives updateDebugOverlay's per-frame text writes.
+function buildReadout(): { text: HTMLDivElement; readout: DebugOverlay['readout'] } {
+    if (!document.getElementById('dbg-readout-style')) {
+        const style = document.createElement('style');
+        style.id = 'dbg-readout-style';
+        style.textContent = '.dbg-copy{cursor:pointer}.dbg-copy:hover{text-decoration:underline}.dbg-copy.copied{color:#8ff0ff}';
+        document.head.appendChild(style);
+    }
+
+    const text = document.createElement('div');
+    text.style.cssText = 'white-space:pre;user-select:text;-webkit-user-select:text';
+    text.innerHTML =
+        'mode    <span data-k="mode"></span>\n' +
+        'cam     <span class="dbg-copy" data-k="cam" title="click to copy [x, y, z]"></span>\n' +
+        'feet    <span class="dbg-copy" data-k="feet" title="click to copy [x, y, z]"></span>  (<span data-k="ground"></span>)\n' +
+        'splats  <span data-k="splats"></span>\n' +
+        'probes  <span data-k="probes"></span>';
+
+    const q = (k: string) => text.querySelector(`[data-k="${k}"]`) as HTMLSpanElement;
+    const readout = {
+        mode: q('mode'),
+        cam: q('cam'),
+        feet: q('feet'),
+        ground: q('ground'),
+        splats: q('splats'),
+        probes: q('probes'),
+    };
+
+    for (const el of [readout.cam, readout.feet]) {
+        el.addEventListener('click', async () => {
+            if (await copyToClipboard(`[${el.textContent}]`)) {
+                el.classList.add('copied');
+                setTimeout(() => el.classList.remove('copied'), 700);
+            }
+        });
+    }
+
+    return { text, readout };
+}
+
 // Minimal debug overlay (plain DOM): a text panel showing the camera position
 // (toggle with the backtick `) plus checkboxes toggling debug wireframes.
 export function createDebugOverlay(perf: Performance): DebugOverlay {
@@ -102,9 +178,12 @@ export function createDebugOverlay(perf: Performance): DebugOverlay {
     crowdCylinders.visible = false;
     crowdCylinders.frustumCulled = false;
 
+    const { text, readout } = buildReadout();
+
     const overlay: DebugOverlay = {
         element,
-        text: document.createElement('div'),
+        text,
+        readout,
         enabled: false,
         showNavMesh: false,
         orbitMode: false,
@@ -141,8 +220,6 @@ export function createDebugOverlay(perf: Performance): DebugOverlay {
         perf.lodScale = value;
     });
 
-    overlay.text.style.cssText = 'white-space:pre;user-select:text;-webkit-user-select:text;cursor:text';
-
     element.append(orbitCheckbox, colliderCheckbox, navmeshCheckbox, probeCheckbox, crowdCheckbox, lodSlider, overlay.text);
     document.body.appendChild(element);
 
@@ -170,16 +247,13 @@ export function updateDebugOverlay(
 
     const p = camera.position;
     const c = character.kcc.position;
-    const ground = GROUND_STATE_NAMES[character.kcc.ground.state] ?? '?';
-    const active = spark.activeSplats.toLocaleString();
-    const max = spark.maxSplats.toLocaleString();
-    let text =
-        `mode    ${overlay.orbitMode ? 'orbit' : 'first-person'}\n` +
-        `cam     ${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}\n` +
-        `feet    ${c[0].toFixed(2)}, ${c[1].toFixed(2)}, ${c[2].toFixed(2)}  (${ground})\n` +
-        `splats  ${active} / ${max}  (lod x${spark.lodSplatScale.toFixed(2)})`;
-    if (probe) text += `\nprobes  ${probe.cells} cells`;
-    overlay.text.textContent = text;
+    const r = overlay.readout;
+    r.mode.textContent = overlay.orbitMode ? 'orbit' : 'first-person';
+    r.cam.textContent = `${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}`;
+    r.feet.textContent = `${c[0].toFixed(2)}, ${c[1].toFixed(2)}, ${c[2].toFixed(2)}`;
+    r.ground.textContent = GROUND_STATE_NAMES[character.kcc.ground.state] ?? '?';
+    r.splats.textContent = `${spark.activeSplats.toLocaleString()} / ${spark.maxSplats.toLocaleString()}  (lod x${spark.lodSplatScale.toFixed(2)})`;
+    r.probes.textContent = probe ? `${probe.cells} cells` : '—';
 }
 
 // Register the probe-gizmo group (built by light-probes.buildProbeGizmos) with the panel so
@@ -187,6 +261,26 @@ export function updateDebugOverlay(
 export function attachProbeGizmos(overlay: DebugOverlay, group: THREE.Group): void {
     overlay.probeGroup = group;
     group.visible = overlay.showProbes;
+}
+
+// Add a "skip:" row of quest-stage buttons to the panel. Clicking one jumps the quest there
+// (dev only). The caller supplies the stage list + what to do on a jump.
+export function addStageSkips(overlay: DebugOverlay, stages: string[], onSkip: (stage: string) => void): void {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:4px;align-items:center;flex-wrap:wrap';
+    const label = document.createElement('span');
+    label.textContent = 'skip:';
+    row.appendChild(label);
+    for (const stage of stages) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = stage;
+        btn.style.cssText =
+            'font:11px monospace;padding:2px 6px;cursor:pointer;background:#031;color:#0f0;border:1px solid #0a0;border-radius:2px';
+        btn.addEventListener('click', () => onSkip(stage));
+        row.appendChild(btn);
+    }
+    overlay.element.insertBefore(row, overlay.text); // just above the readout
 }
 
 // Build the static collider wireframe once. The colliders (floor box + level triangle

@@ -4,6 +4,7 @@ import {
     createNavMesh,
     DEFAULT_QUERY_FILTER,
     findNearestPoly,
+    findPath,
     type NavMesh,
     type NavMeshTile,
     type Vec3,
@@ -114,6 +115,17 @@ export function snapToNavMesh(navigation: Navigation, point: Vec3, out: Vec3): b
 
 export function getAgent(navigation: Navigation, agentId: string): crowd.Agent | undefined {
     return navigation.crowd?.agents[agentId];
+}
+
+const PATH_HALF_EXTENTS: Vec3 = [1, 2, 1]; // tolerance clamping start/end onto the mesh
+
+// Find a walkable route from `from` to `to` and return its corner points (world space), or null
+// if there's no path. Used to draw the objective trail.
+export function computePath(navigation: Navigation, from: Vec3, to: Vec3): Vec3[] | null {
+    if (!navigation.navMesh) return null;
+    const res = findPath(navigation.navMesh, from, to, PATH_HALF_EXTENTS, DEFAULT_QUERY_FILTER);
+    if (!res.success || res.path.length === 0) return null;
+    return res.path.map((pt) => [pt.position[0], pt.position[1], pt.position[2]] as Vec3);
 }
 
 // Add the player's proxy agent to the crowd (target-less — it's driven by hand via

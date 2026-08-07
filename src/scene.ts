@@ -80,8 +80,45 @@ export const CAMERA_TARGET: Vec3 = [-11, 8, -2];
 // --- First-person character ---
 // TODO(scifi_world): spawn is a best guess (collider centre, just above the y0–2 floor); tune
 // in-app with the debug panel's feet readout so you drop onto solid floor, not into a wall/void.
-export const CHARACTER_SPAWN: Vec3 = [3, 1, -14]; // feet position the player drops in at
-export const CHARACTER_LOOK_TARGET: Vec3 = [-11, 4.9, 8]; // point the player initially faces
+// Spawn out near the ship so the intro (index.ts) frames the striker + the cats + George.
+export const CHARACTER_SPAWN: Vec3 = [-1.2, 0.19, 2.52]; // feet position the player drops in at
+export const CHARACTER_LOOK_TARGET: Vec3 = [3.53, 1.2, 6.3]; // faces the striker
+
+// --- "Who Took the Bolts?" quest cast (see characters.ts / quest) ---
+// The four companions parked one per room as stationary NPCs (spawnQuestCast snaps each onto
+// the navmesh). Positions are from the debug feet readout in each room; `facing` (radians) is
+// the yaw the model faces while idle — nudge in-app (backtick panel → click-copy a feet vec).
+// The accusation chain walks these in order: George → Leela → Mike → Stan.
+export type QuestAnchor = { model: string; pos: Vec3; facing: number };
+export const QUEST_CAST: QuestAnchor[] = [
+    { model: 'George', pos: [-1.86, 1.06, -1.93], facing: 0 }, // out by the ship (greets you)
+    { model: 'Leela', pos: [-2.46, 1.26, -30.4], facing: 0 }, // bar
+    { model: 'Mike', pos: [12.07, 1.26, -28.84], facing: 0 }, // herbarium
+    { model: 'Stan', pos: [25.25, 1.06, -23.58], facing: 0 }, // back control room
+];
+
+// --- "Where Are the Keys?" finale assets (see index.ts / interactables.ts) ---
+// The striker + the cat sit on the outside pad. Positions are best-guesses to TUNE
+// in-app (backtick panel → click-copy a feet vec). The striker has no baked animation, so the
+// launch is a procedural tween.
+export const STRIKER_URL = `${BASE}striker.gltf`;
+export const STRIKER_POS: Vec3 = [3.53, 2.6, 6.3]; // outside pad; floats/bobs (STRIKER_BOB_*)
+// Walkable floor UNDER the ship where the cats gather at the finale before hopping aboard. Must be
+// a real navmesh spot (the ship's own y=2.6 is too high to snap onto the floor). From the debug feet readout.
+export const STRIKER_BOARD_POS: Vec3 = [2.68, -0.55, 5.88];
+export const STRIKER_SCALE = 0.85;
+export const STRIKER_YAW = 0; // radians
+export const STRIKER_EMISSIVE = 0.45; // self-illumination from its own texture so the ship isn't dark on the pad
+export const STRIKER_BOB_AMP = 0.06; // metres the ship rises/falls (gentle)
+export const STRIKER_BOB_FREQ = 0.16; // bob cycles/sec (slow)
+// The cats loiter around the ship, wandering + bobbing (see cats.ts). The model file is still
+// navcat.glb on disk; the constants are named CAT_* everywhere in code.
+export const CAT_URL = `${BASE}characters/navcat.glb`;
+export const CAT_HEIGHT = 0.3; // fit each (oversized) cat model to this world height
+export const CAT_Y_NUDGE = -0.05; // extra lower/raise on top of auto foot-grounding
+export const CATS_COUNT = 10;
+export const CATS_CENTER: Vec3 = [-0.01, 0.06, 1.97]; // on interior floor (at floor height so snaps land)
+export const CATS_SPREAD = 3.6; // metres each cat wanders around the centre (wider = more scattered)
 
 // --- Physics ---
 export const GRAVITY: Vec3 = [0, -9.81, 0];

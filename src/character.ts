@@ -1,10 +1,10 @@
 import { capsule, type Filter, filter, type KCC, kcc, transformed } from 'crashcat';
 import { quat, type Vec3, vec3, vec4 } from 'mathcat';
-import { OBJECT_LAYER_MOVING, type Physics } from './physics';
+import { OBJECT_LAYER_GHOST, OBJECT_LAYER_MOVING, type Physics } from './physics';
 import { CHARACTER_SPAWN, GRAVITY } from './scene';
 
 // --- Character dimensions (metres) ---
-const CHARACTER_HEIGHT = 1; // full capsule height, foot to crown
+const CHARACTER_HEIGHT = 1.2; // full capsule height, foot to crown
 const CHARACTER_RADIUS = 0.2;
 // A capsule's total height is its cylinder section plus a radius hemisphere at
 // each end, so cylinder = height - 2*radius (and half of that for the shape arg).
@@ -65,7 +65,6 @@ export function initCharacter(physics: Physics): Character {
         vec3.fromValues(CHARACTER_SPAWN[0], CHARACTER_SPAWN[1], CHARACTER_SPAWN[2]),
         quat.create(),
     );
-    
 
     kcc.add(physics.world, character);
 
@@ -74,9 +73,18 @@ export function initCharacter(physics: Physics): Character {
 
     const updateSettings = kcc.createDefaultUpdateSettings();
 
+    // The player's movement filter starts with every layer enabled. Drop the GHOST object layer
+    // so our capsule sweeps ignore the character + interactable raycast capsules (all on GHOST):
+    // otherwise the crew/cats can physically wedge us in a hallway. They stay hittable by the
+    // interaction view ray, which uses its own all-layers filter (see view-ray.ts). GHOST shares
+    // the MOVING broadphase with OBJECT_LAYER_MOVING, so disabling it here leaves the broadphase
+    // (and level collision) intact.
+    const playerFilter = filter.create(physics.world.settings.layers);
+    filter.disableObjectLayer(playerFilter, physics.world.settings.layers, OBJECT_LAYER_GHOST);
+
     const c: Character = {
         kcc: character,
-        filter: filter.create(physics.world.settings.layers),
+        filter: playerFilter,
         updateSettings,
         allowSliding: false,
         listener: {},
@@ -88,7 +96,16 @@ export function initCharacter(physics: Physics): Character {
     // frame — it reads as jittering / drifting while standing still. Mirrors the
     // crashcat KCC example's onContactSolve. We only clamp when `allowSliding` is false,
     // so intentional movement (and sliding down steep slopes) is untouched.
-    c.listener.onContactSolve = (_character, _body, _subShapeId, _contactPosition, contactNormal, contactVelocity, _characterVelocity, ioCharacterVelocity) => {
+    c.listener.onContactSolve = (
+        _character,
+        _body,
+        _subShapeId,
+        _contactPosition,
+        contactNormal,
+        contactVelocity,
+        _characterVelocity,
+        ioCharacterVelocity,
+    ) => {
         if (c.allowSliding) return;
         if (vec3.squaredLength(contactVelocity) < 1e-6 && !kcc.isSlopeTooSteep(character, contactNormal)) {
             vec3.zero(ioCharacterVelocity);
@@ -96,6 +113,11 @@ export function initCharacter(physics: Physics): Character {
     };
 
     return c;
+}
+
+// Whether the character is currently standing on the ground (vs. airborne / on a steep slope).
+export function isOnGround(c: Character): boolean {
+    return c.kcc.ground.state === kcc.GroundState.ON_GROUND;
 }
 
 // Scratch vectors — reused each frame to avoid per-frame allocation.

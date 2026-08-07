@@ -23,7 +23,4 @@ dist-ssr
 *.sln
 *.sw?
 
-# Large splat assets. The runtime LOD splat (public/spaceship-lod.rad) is committed
-# via Git LFS; the source .spz and the unused alternate LOD are kept local-only.
-assets/*.spz
-public/cozy-spaceship_2-lod.rad
+llm

@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="cover.png" alt="clingy-space-friends, a walkable Gaussian-splat spaceship with a crowd of companions" width="820" />
+  <img src="cover.png" alt="scifi-fetch-quest — a walkable Gaussian-splat spaceship whodunit" width="820" />
 </p>
 
-# clingy-space-friends
+# scifi-fetch-quest
 
-A walkable Gaussian-splat spaceship: explore a cozy ship interior in first person, with a little crowd of companions that follow you around and play emotes when you interact with them. Rendered with [Spark](https://github.com/sparkjsdev/spark) in the browser. Use it as a starter for your own interactive splat worlds.
+A walkable Gaussian-splat spaceship with a tiny whodunit stapled on. The striker's keys have vanished, the crew are stranded, and they do the sensible thing: blame each other. Walk the ship in first person, talk your way down the accusation chain (George → Leela → Mike → Stan), and discover it was the **cats** all along — who promptly board the ship and fly off, leaving the crew to sheepishly apologise. Rendered with [Spark](https://github.com/sparkjsdev/spark) in the browser; also a reasonable starter for your own interactive splat worlds.
 
 ## Stack
 
@@ -15,7 +15,7 @@ A walkable Gaussian-splat spaceship: explore a cozy ship interior in first perso
 | Physics & character controller | [crashcat](https://www.npmjs.com/package/crashcat) (static triangle-mesh collider, kinematic character controller, raycasts) |
 | Navigation | [navcat](https://www.npmjs.com/package/navcat) (solo navmesh and crowd steering/avoidance) |
 | Math | [mathcat](https://www.npmjs.com/package/mathcat) |
-| Binary asset packing | [packcat](https://www.npmjs.com/package/packcat) (the collider `.bin` schema) |
+| Binary asset packing | [packcat](https://www.npmjs.com/package/packcat) |
 | Asset tooling | [glTF-Transform](https://gltf-transform.dev) (collider/navmesh extraction), [Playwright](https://playwright.dev) (headed light-probe bake) |
 | Language and build | TypeScript with [Vite](https://vite.dev) |
 | Lint and format | [Biome](https://biomejs.dev) |
@@ -46,70 +46,70 @@ pnpm preview      # serve the production build locally
 
 - **Move**: `W` `A` `S` `D` / arrow keys
 - **Look**: mouse (click the canvas to capture the pointer)
-- **Jump**: `Space`
-- **Sprint**: hold `Shift`
-- **Interact**: walk up to a companion and **left-click**. The crosshair shows a mouse "interact" hint when one is in range (~2 m). Clicking makes them play a random emote (`Yes`, `No`, or `Dance`), then blend back.
+- **Jump**: `Space` · **Sprint**: hold `Shift`
+- **Talk**: aim at a crew member or cat; a "talk" card appears by the crosshair when you're in range — **left-click** to start.
+  - Crew responses use a **radial wheel**: flick the mouse toward a reply and click (or press `1`–`3`). Pointer lock stays put.
+  - Cats just play dumb (`meow?`) until the reveal.
+- **Objective**: a marker floats over your current target with the distance, and a chevron ribbon on the floor points the way.
 - **Debug panel**: backtick (`` ` ``)
-- **Bake light probes in-app**: `B` (the offline `pnpm bake:probes` is what produces the committed grid)
+
+## The game
+
+A short "Where Are the Keys?" quest. Each crew member you confront blames the next and joins a little conga line trailing behind you, until Stan's security footage names the real culprit: the cats loitering by the ship. Confront them, they gloat, the whole mob leaps aboard the striker and launches — then the crew apologise to each other in the aftermath. The whole thing is data-driven in [`src/quest.ts`](src/quest.ts), so the accusation chain and dialogue are easy to retune.
 
 ## How it works
 
-A Gaussian splat is only visuals: a cloud of coloured blobs, with no floor, walls, or sense of which blobs are solid. The interactive parts come from invisible data aligned with the splat.
+A Gaussian splat is only visuals: a cloud of coloured blobs, with no floor, walls, or sense of which blobs are solid. Everything interactive comes from invisible data aligned with the splat.
 
-**Collider** (`src/physics.ts`, `src/collider-schema.ts`). A static triangle mesh of the ship's hull and floors. [crashcat](https://www.npmjs.com/package/crashcat) uses it for the player's swept capsule collisions, and the interaction ray casts against it so a wall between you and a companion blocks the interaction.
+- **Collider** (`src/collider-load.ts`, `src/physics.ts`). A hand-authored triangle mesh of the hull and floors (`scifi_world_collider.glb`), loaded at runtime. [crashcat](https://www.npmjs.com/package/crashcat) uses it for the player's swept-capsule collisions, the interaction ray, and grounding raycasts — and it doubles as the shadow receiver.
+- **Character controller** (`src/character.ts`, `src/controls.ts`). A crashcat kinematic capsule with Quake-style movement (ground friction, air-strafe, bunny-hop), pointer-lock mouse look, and a subtle view bob.
+- **Navmesh + crowd** (`src/navigation.ts`, `src/characters.ts`, `src/cats.ts`). The crew *and* the cats are [navcat](https://www.npmjs.com/package/navcat) crowd agents that path around the ship and avoid each other; the player is a target-less proxy agent pinned to your feet so they steer around you too.
+- **Cast** (`src/character-visuals.ts`, `src/cats.ts`). Animated models that blend idle/walk by speed, turn to face you while talking, and — for the cats — wander, meow, and hop into the ship at the finale.
+- **Dialogue** (`src/dialogue.ts`, `src/voice.ts`). The radial response wheel plus an Animal-Crossing-style "animalese" typewriter voice (pure Web Audio, no samples).
+- **HUD** (`src/nameplate.ts`, `src/objective-marker.ts`, `src/path-trail.ts`, `src/quest-hud.ts`). The talk prompt, the world-space objective marker, the floor chevron ribbon, and the objective line.
+- **Shadows** (`src/shadows.ts`). A directional sun casts the crew + cats onto the collider mesh, reused as an invisible `ShadowMaterial` receiver so shadows land on the real floor and follow its shape.
+- **Lighting** (`src/light-probes.ts`). The cast is lit by a baked order-2 SH light-probe *volume* sampled per fragment, so their colour varies as they move through the ship.
 
-**Character controller** (`src/character.ts`, `src/controls.ts`). The player is a crashcat kinematic character controller (KCC) capsule with Quake-style movement (ground friction, air-strafe acceleration, bunny-hopping), plus pointer-lock mouse look and a subtle view bob that leans into a run.
-
-**Navmesh** (`src/navigation.ts`). A navigation mesh over the walkable floor that [navcat](https://www.npmjs.com/package/navcat) uses for path-finding and crowd steering.
-
-**Crowd** (`src/characters.ts`). The companions are navcat crowd agents that follow the player and avoid each other. The player is *also* a crowd agent (a target-less proxy pinned to your feet each frame), so the companions steer around you like any other obstacle.
-
-**Companions** (`src/character-visuals.ts`). Draws an animated model per companion, blending idle and walk by speed and facing the direction of travel. Interactions crossfade in a one-shot emote clip and blend back out when it ends.
-
-**Interaction** (`src/view-ray.ts`, `src/crosshair.ts`). Each companion has a kinematic capsule that follows it, used only as a raycast target. A ray from the camera resolves the closest hit back to a character via a body→character map in `physics.ts`. If it lands on a companion in range, the crosshair shows the hint and a left-click triggers the emote.
-
-The collider, navmesh, and probe grid are "baked": generated once, offline, then saved as small files the browser loads directly (see [Asset pipeline](#asset-pipeline)). A loading overlay stays up until enough of the splat is on screen (it counts drawn splats rather than waiting a fixed time).
+The collider, navmesh, and probe grid are "baked": generated once, offline, then loaded directly. A loading overlay stays up until enough of the splat is on screen (it counts drawn splats rather than waiting a fixed time).
 
 ## Asset pipeline
 
-Everything the browser loads is baked offline, so there's no heavy parsing at runtime. The hand-authored collision mesh `assets/colliders.glb` is the shared source for both the runtime collider and the navmesh. The light-probe grid is baked from the ship splat itself.
+Everything the browser loads is prepared offline, so there's no heavy parsing at runtime. The hand-authored collision mesh is the shared source for both the runtime collider and the navmesh; the light-probe grid is baked from the ship splat itself.
 
 ```bash
-pnpm build:collider   # public/collider.bin       from assets/colliders.glb
-pnpm build:navmesh    # public/navmesh.json        from assets/colliders.glb
+pnpm build:navmesh    # public/navmesh.json        from the collider .glb
 pnpm bake:probes      # public/light-probes.json   from the ship splat (via src/bake.ts)
+pnpm build:lod        # public/<name>-lod.rad      streaming-LOD splat from the source .spz
 ```
 
 | Script | Input | Output | Used by |
 | --- | --- | --- | --- |
-| [`scripts/build-collider.ts`](scripts/build-collider.ts) | `assets/colliders.glb` | `public/collider.bin` | `src/collider-schema.ts`, then `src/physics.ts` |
-| [`scripts/build-navmesh.ts`](scripts/build-navmesh.ts) | `assets/colliders.glb` | `public/navmesh.json` | `src/navigation.ts` |
+| [`scripts/build-navmesh.ts`](scripts/build-navmesh.ts) | `scifi_world_collider.glb` | `public/navmesh.json` | `src/navigation.ts` |
 | [`scripts/bake-probes.mjs`](scripts/bake-probes.mjs) | ship splat (`bake.html` → `src/bake.ts`) | `public/light-probes.json` | `src/light-probes.ts` |
+| [`scripts/build-lod.sh`](scripts/build-lod.sh) | source `.spz` | `public/<name>-lod.rad` | `src/index.ts` |
 
-The collider is packed to a compact binary with [packcat](https://www.npmjs.com/package/packcat), storing just positions and triangle indices. `src/collider-schema.ts` is the shared pack/unpack schema. `build-navmesh` also flood-fill-prunes the navmesh from a seed point, so only the one connected walkable volume the player occupies is saved. Disconnected islands and the exterior hull shell are dropped.
+`build-navmesh` flood-fill-prunes from a seed point, so only the one connected walkable volume the player occupies is saved (disconnected islands and the exterior hull are dropped). The probe bake spins up the Vite dev server and opens `bake.html` in **real headed Chrome** — Spark needs a real GPU, and headless Chromium renders splats faithlessly — then captures the SH grid and writes the JSON. Re-run it when the ship splat or the `PROBE_*` config in `src/scene.ts` changes.
 
-The probe bake spins up the Vite dev server, opens `bake.html` in **real headed Chrome**, because Spark needs a real GPU and headless Chromium renders splats faithlessly. It then captures the SH grid the page computes and writes the JSON. Re-run it whenever the ship splat or the `PROBE_*` grid config in `src/scene.ts` changes.
-
-> The runtime splat (`public/<name>-lod.rad`) is a streaming-LOD `.rad` built from the source `.spz` with Spark's Rust `build-lod` tool — which ships in the Spark *source* repo, not the npm package. Run `pnpm build:lod [input.spz]` (defaults to `assets/scifi_world.spz`); set `SPARK_REPO` if your Spark checkout isn't at `~/Development/spark-gpu`. The prebuilt `.rad` ships in `public/`.
+> The runtime splat (`public/<name>-lod.rad`) is built from the source `.spz` with Spark's Rust `build-lod` tool, which ships in the Spark *source* repo, not the npm package. Set `SPARK_REPO` if your Spark checkout isn't at `~/Development/spark-gpu`. The prebuilt `.rad` ships in `public/`.
 
 ## Scene configuration
 
-Everything specific to *this* ship's geometry and layout (asset URLs, camera/spawn positions, the light-probe grid extents, gravity, lighting intensities) lives in [`src/scene.ts`](src/scene.ts), so swapping in a new world is largely a one-file edit. Per-system "feel" constants (movement, bob, follow distances) stay in their own modules.
+Everything specific to *this* ship (asset URLs, camera/spawn positions, cast anchors, the striker/cat placement, the light-probe grid extents, gravity, lighting intensities) lives in [`src/scene.ts`](src/scene.ts), so swapping in a new world is largely a one-file edit. Per-system "feel" constants (movement, bob, follow distances, dialogue timing) stay in their own modules.
 
 ## Debug panel
 
 Press backtick (`` ` ``) for a debug overlay with a live readout (camera/feet position, splat counts) and toggles:
 
 - **orbit camera**: swap the first-person controller for an orbit camera
-- **collider debug**: the static collision triangle mesh (built once)
-- **navmesh debug**: the walkable navmesh
-- **light probes**: the baked probe grid, each shown as an SH-shaded gizmo sphere
-- **crowd debug**: a cylinder per crowd agent (companions and the player proxy)
+- **collider / navmesh debug**: the collision mesh and the walkable navmesh
+- **light probes**: the baked probe grid, each cell an SH-shaded gizmo sphere
+- **crowd debug**: a cylinder per crowd agent (crew, cats, and the player proxy)
 - **lod scale**: a slider on the splat level-of-detail budget
+- **skip to stage**: jump the quest to any stage (george → … → cat → closed) to test dialogue and the finale
 
 ## Deploy (GitHub Pages)
 
-`vite.config.ts` reads a `BASE_PATH` env var (default `/`). To serve under a project subpath, build with it set (e.g. `BASE_PATH=/clingy-space-friends/ pnpm build`), so the app and its absolute asset URLs (via `import.meta.env.BASE_URL` in `src/scene.ts`) resolve correctly. Update the value if you rename the repo.
+`vite.config.ts` reads a `BASE_PATH` env var (default `/`). To serve under a project subpath, build with it set (e.g. `BASE_PATH=/scifi-fetch-quest/ pnpm build`) so the app and its absolute asset URLs (via `import.meta.env.BASE_URL` in `src/scene.ts`) resolve correctly. Update the value if you rename the repo.
 
 ## License
 

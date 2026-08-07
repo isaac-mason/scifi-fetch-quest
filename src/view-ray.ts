@@ -1,4 +1,5 @@
 import {
+    type BodyId,
     CastRayStatus,
     castRay,
     createClosestCastRayCollector,
@@ -22,11 +23,12 @@ const _forward = new THREE.Vector3();
 let viewFilter: Filter | null = null;
 
 /**
- * Cast a ray straight out of the camera and, if the closest thing it hits is a
- * character's capsule, return that character's id. Returns null if it hits the world
- * (a wall occludes the character) or nothing within `maxDistance`.
+ * Cast a ray straight out of the camera and return the id of the closest rigid body it hits
+ * (or null if it hits nothing within `maxDistance`). Walls occlude, so this is genuine line of
+ * sight. The caller resolves the body to a character (physics.bodyToCharacter) or an
+ * interactable (physics.bodyToInteractable).
  */
-export function castViewRay(physics: Physics, camera: THREE.Camera, maxDistance: number): string | null {
+export function castViewRay(physics: Physics, camera: THREE.Camera, maxDistance: number): BodyId | null {
     if (!viewFilter) {
         viewFilter = filter.forWorld(physics.world);
         viewFilter.bodyFilter = (body) => body.id !== physics.playerBodyId;
@@ -44,5 +46,5 @@ export function castViewRay(physics: Physics, camera: THREE.Camera, maxDistance:
     castRay(physics.world, collector, settings, _origin, _direction, maxDistance, viewFilter);
     if (collector.hit.status !== CastRayStatus.COLLIDING) return null;
 
-    return physics.bodyToCharacter.get(collector.hit.bodyIdB) ?? null;
+    return collector.hit.bodyIdB;
 }
