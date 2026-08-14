@@ -16,8 +16,7 @@ const GROUND_STATE_NAMES: Record<number, string> = {
 export type DebugOverlay = {
     element: HTMLDivElement;
     text: HTMLDivElement;
-    /** Live readout value spans, built once and updated each frame by updateDebugOverlay.
-     *  cam/feet are click-to-copy — clicking copies the vector as `[x, y, z]`. */
+    /** Live readout value spans; cam/feet are click-to-copy as `[x, y, z]`. */
     readout: {
         mode: HTMLSpanElement;
         cam: HTMLSpanElement;
@@ -32,33 +31,23 @@ export type DebugOverlay = {
     showNavMesh: boolean;
     /** Camera mode: true = free orbit camera, false = first-person character. */
     orbitMode: boolean;
-    /**
-     * Line segments for the static collider wireframe (floor + level triangle mesh).
-     * Built once via buildColliderDebug — the colliders never move — and toggled
-     * on/off with the "collider debug" checkbox.
-     */
+    /** Static collider wireframe (floor + level mesh); built once, toggled by "collider debug". */
     colliderLines: THREE.LineSegments;
     /** Whether the light-probe volume gizmos are drawn (toggled by the checkbox). */
     showProbes: boolean;
-    /** One SH-shaded sphere per probe cell (built by light-probes.buildProbeGizmos, attached
-     *  via attachProbeGizmos once the volume loads). */
+    /** One SH-shaded sphere per probe cell; attached via attachProbeGizmos once the volume loads. */
     probeGroup: THREE.Group | null;
     /** Whether the crowd-agent cylinders are drawn (toggled by the checkbox). */
     showCrowd: boolean;
-    /** Wireframe cylinder per crowd agent (radius × height). Rebuilt each frame. */
+    /** Wireframe cylinder per crowd agent (radius x height). Rebuilt each frame. */
     crowdCylinders: THREE.LineSegments;
-    /** Whether companions/cats sample the baked light-probe volume (the SH GI material effect).
-     *  Default on; unchecking the "probe lighting" box zeroes the volume contribution. */
+    /** Whether companions/cats sample the baked light-probe volume (SH GI). Default on. */
     probeLighting: boolean;
-    /** Whether sun shadows are rendered. Default on; index applies this to the renderer each
-     *  frame (see setShadowsEnabled). Unchecking the "shadows" box turns them off. */
+    /** Whether sun shadows are rendered. Default on; applied each frame via setShadowsEnabled. */
     shadows: boolean;
-    /** Whether the character + cat models are drawn. Default on; index passes this into the
-     *  visual updates. Unchecking the "characters" box hides them (state keeps running). */
+    /** Whether the character + cat models are drawn. Default on; state keeps running when hidden. */
     showCharacters: boolean;
-    /** Whether the screen-space HUD (crosshair, nameplate, objective marker, quest line,
-     *  controls hint) is shown. Default on; driven purely by CSS — the "hud" box toggles a
-     *  `hud-off` class on <body> that hides every `.hud` element (see createDebugOverlay). */
+    /** Whether the screen-space HUD is shown. Default on; CSS `hud-off` body class hides `.hud`. */
     showHud: boolean;
 };
 
@@ -99,8 +88,7 @@ function createRange(
     return wrapper;
 }
 
-// Copy text to the clipboard (navigator.clipboard, with an execCommand fallback for
-// non-secure contexts). Returns whether it succeeded.
+// Copy text to the clipboard, with an execCommand fallback for non-secure contexts.
 async function copyToClipboard(text: string): Promise<boolean> {
     try {
         await navigator.clipboard.writeText(text);
@@ -123,9 +111,7 @@ async function copyToClipboard(text: string): Promise<boolean> {
 }
 
 // Build the monospace readout panel: fixed labels with per-value spans updated each frame.
-// The cam/feet vectors are click-to-copy — clicking copies `[x, y, z]` (ready to paste into a
-// Vec3 constant in scene.ts) and briefly flashes the value. Built once; the spans persist so
-// the copy flash survives updateDebugOverlay's per-frame text writes.
+// cam/feet are click-to-copy as `[x, y, z]`; spans persist so the flash survives per-frame writes.
 function buildReadout(): { text: HTMLDivElement; readout: DebugOverlay['readout'] } {
     if (!document.getElementById('dbg-readout-style')) {
         const style = document.createElement('style');
@@ -165,8 +151,7 @@ function buildReadout(): { text: HTMLDivElement; readout: DebugOverlay['readout'
     return { text, readout };
 }
 
-// Minimal debug overlay (plain DOM): a text panel showing the camera position
-// (toggle with the backtick `) plus checkboxes toggling debug wireframes.
+// Minimal debug overlay: a text panel (toggle with backtick) plus debug-wireframe checkboxes.
 export function createDebugOverlay(perf: Performance): DebugOverlay {
     const element = document.createElement('div');
     element.style.cssText = [
@@ -183,12 +168,12 @@ export function createDebugOverlay(perf: Performance): DebugOverlay {
         'z-index:1000',
     ].join(';');
 
-    // Static collider wireframe — built once (see buildColliderDebug). Coloured per-vertex.
+    // Static collider wireframe - built once (see buildColliderDebug). Coloured per-vertex.
     const colliderLines = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ vertexColors: true }));
     colliderLines.visible = false;
     colliderLines.frustumCulled = false;
 
-    // Crowd-agent cylinders — rebuilt each frame from the live agents (see updateCrowdDebug).
+    // Crowd-agent cylinders - rebuilt each frame from the live agents (see updateCrowdDebug).
     const crowdCylinders = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x33e0ff }));
     crowdCylinders.visible = false;
     crowdCylinders.frustumCulled = false;
@@ -213,8 +198,7 @@ export function createDebugOverlay(perf: Performance): DebugOverlay {
         showHud: true,
     };
 
-    // One-time rule the "hud" toggle flips: hide every `.hud` element at once. `!important` beats
-    // the per-frame inline `display` each HUD module sets, so nothing fights it back on.
+    // One-time rule the "hud" toggle flips. `!important` beats each module's per-frame inline display.
     if (!document.getElementById('hud-toggle-style')) {
         const style = document.createElement('style');
         style.id = 'hud-toggle-style';
@@ -244,10 +228,9 @@ export function createDebugOverlay(perf: Performance): DebugOverlay {
         crowdCylinders.visible = checked;
     });
 
-    // --- Feature toggles (default ON — unchecking disables the effect) ---
-    // Probe lighting: the baked SH GI material effect on the companions/cats. Applied straight to
-    // the shared volume uniform here (no per-frame work); the "light probes" box above is separate
-    // (it draws the probe gizmo spheres).
+    // --- Feature toggles (default ON - unchecking disables the effect) ---
+    // Probe lighting: baked SH GI on the companions/cats, applied straight to the shared volume
+    // uniform. Separate from the "light probes" box above (which draws the gizmo spheres).
     const probeLightingCheckbox = createCheckbox(
         'probe lighting',
         (checked) => {
@@ -257,8 +240,7 @@ export function createDebugOverlay(perf: Performance): DebugOverlay {
         true,
     );
 
-    // Shadows: sun shadow-mapping. index reads overlay.shadows each frame and applies it to the
-    // renderer/sun (setShadowsEnabled), since that needs the renderer.
+    // Shadows: sun shadow-mapping. index applies overlay.shadows each frame via setShadowsEnabled.
     const shadowsCheckbox = createCheckbox(
         'shadows',
         (checked) => {
@@ -267,8 +249,7 @@ export function createDebugOverlay(perf: Performance): DebugOverlay {
         true,
     );
 
-    // Characters: the crew + cat models. index passes overlay.showCharacters into the visual
-    // updates, which hide the meshes (keeping their state/animation running).
+    // Characters: crew + cat models. Hides the meshes while keeping their state/animation running.
     const charactersCheckbox = createCheckbox(
         'characters',
         (checked) => {
@@ -277,8 +258,7 @@ export function createDebugOverlay(perf: Performance): DebugOverlay {
         true,
     );
 
-    // HUD: the screen-space overlays (crosshair, nameplate, objective marker, quest line, controls
-    // hint). Pure CSS — flip the `hud-off` body class and the rule above hides every `.hud` element.
+    // HUD: the screen-space overlays. Pure CSS - the `hud-off` body class hides every `.hud` element.
     const hudCheckbox = createCheckbox(
         'hud',
         (checked) => {
@@ -317,7 +297,7 @@ export function createDebugOverlay(perf: Performance): DebugOverlay {
     return overlay;
 }
 
-// Live light-probe readout: how many cells the loaded probe volume holds (nx*ny*nz).
+// Live light-probe readout: cell count of the loaded probe volume (nx*ny*nz).
 export type ProbeReadout = { cells: number };
 
 export function updateDebugOverlay(
@@ -340,15 +320,13 @@ export function updateDebugOverlay(
     r.probes.textContent = probe ? `${probe.cells} cells` : '—';
 }
 
-// Register the probe-gizmo group (built by light-probes.buildProbeGizmos) with the panel so
-// the "light probes" checkbox controls its visibility. The caller adds the group to the scene.
+// Register the probe-gizmo group so the "light probes" checkbox controls its visibility.
 export function attachProbeGizmos(overlay: DebugOverlay, group: THREE.Group): void {
     overlay.probeGroup = group;
     group.visible = overlay.showProbes;
 }
 
-// Add a "skip:" row of quest-stage buttons to the panel. Clicking one jumps the quest there
-// (dev only). The caller supplies the stage list + what to do on a jump.
+// Add a "skip:" row of quest-stage buttons; clicking one jumps the quest there (dev only).
 export function addStageSkips(overlay: DebugOverlay, stages: string[], onSkip: (stage: string) => void): void {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:4px;align-items:center;flex-wrap:wrap';
@@ -364,13 +342,11 @@ export function addStageSkips(overlay: DebugOverlay, stages: string[], onSkip: (
         btn.addEventListener('click', () => onSkip(stage));
         row.appendChild(btn);
     }
-    overlay.element.insertBefore(row, overlay.text); // just above the readout
+    overlay.element.insertBefore(row, overlay.text);
 }
 
-// Build the static collider wireframe once. The colliders (floor box + level triangle
-// mesh) never move, so we generate the line segments a single time — after the collider
-// is loaded — and thereafter the "collider debug" checkbox just toggles visibility.
-// Call this once the physics world's static bodies exist (e.g. after createSplatCollider).
+// Build the static collider wireframe once (colliders never move); the checkbox just toggles it.
+// Call once the physics world's static bodies exist (e.g. after createSplatCollider).
 export function buildColliderDebug(overlay: DebugOverlay, world: World): void {
     let total = 0;
     const parts: ReturnType<typeof ccDebug.body>[] = [];
@@ -395,7 +371,7 @@ export function buildColliderDebug(overlay: DebugOverlay, world: World): void {
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 }
 
-// Minimal structural view of a crowd agent — enough to draw its cylinder.
+// Minimal structural view of a crowd agent - enough to draw its cylinder.
 export type CrowdAgentView = { position: ArrayLike<number>; radius: number; height: number };
 
 const CROWD_CIRCLE_SEGMENTS = 16; // resolution of each cylinder's rings
@@ -403,10 +379,8 @@ const CROWD_STRUTS = 4; // vertical lines joining the top/bottom rings
 // verts per agent: two rings (segment lines) + the vertical struts, each a 2-vert line.
 const CROWD_VERTS_PER_AGENT = CROWD_CIRCLE_SEGMENTS * 2 * 2 + CROWD_STRUTS * 2;
 
-// Rebuild the crowd-agent cylinders from the live agents. Agents move every frame, so
-// this reruns each frame while enabled; the buffer is reused unless the agent count
-// changes. Each agent is a wireframe cylinder: a ring at the feet, a ring at `height`,
-// and a few vertical struts — radius = the agent's avoidance radius.
+// Rebuild the crowd-agent cylinders each frame from the live agents (buffer reused unless the
+// count changes). Each agent: a ring at the feet, a ring at `height`, and a few vertical struts.
 export function updateCrowdDebug(overlay: DebugOverlay, agents: CrowdAgentView[]): void {
     if (!overlay.showCrowd) return;
 

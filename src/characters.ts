@@ -16,14 +16,10 @@ import {
 import { addCharacterCollider, groundAt, moveCharacterCollider, type Physics, removeCharacterCollider } from './physics';
 import { CATS_CENTER, CATS_COUNT, CATS_SPREAD, QUEST_CAST } from './scene';
 
-// The unified NPC data model. Every non-player character — the crew AND the cats — is a Character:
-// a navcat crowd agent + a ghost sensor for the view ray + a grounded feet position + a behaviour.
-// This module owns the DATA and the per-frame kinematics/steering; it holds no three.js. The
-// visual system (character-visuals.ts) reads these and draws an animated model per id.
-//
-// The only thing that differs between a crewmember and a cat is its `behaviour` (and its model +
-// tuning): crew `follow` the player; cats `wander`, then in the finale `goto` the ship and `hop`
-// aboard. Each behaviour is a small tagged variant with its own updater — no god-object of flags.
+// Unified NPC data model. Every non-player character (crew and cats) is a Character: a navcat crowd
+// agent + a ghost view-ray sensor + a grounded feet position + a behaviour. Owns the data and
+// per-frame kinematics/steering, no three.js. character-visuals.ts draws a model per id.
+// Crew vs cat differ only by behaviour: crew `follow`; cats `wander`, then finale `goto` + `hop`.
 
 // --- Behaviours (tagged union) -------------------------------------------------------------------
 
@@ -43,21 +39,21 @@ export type WanderBehaviour = {
 };
 // Finale step 1: steer the agent to a world point (the gather spot under the ship).
 export type GotoBehaviour = { kind: 'goto'; target: Vec3 };
-// Finale step 2: a procedural position-arc leap from `from` to `to`; despawns when `timer` runs out.
+// Finale step 2: procedural arc leap from `from` to `to`; despawns when `timer` runs out.
 export type HopBehaviour = { kind: 'hop'; from: Vec3; to: Vec3; timer: number };
 
 export type Behaviour = FollowBehaviour | WanderBehaviour | GotoBehaviour | HopBehaviour;
 
 export type Character = {
     id: string; // == navcat agent id
-    model: string; // which template character-visuals draws ('George' … | 'cat')
+    model: string; // which template character-visuals draws ('George'... | 'cat')
     name: string; // nameplate label
     headHeight: number; // metres above the feet the camera looks at while talking
     position: Vec3; // grounded feet, world space (snapped to the collider, not the navmesh)
     facing: number; // yaw (radians)
     speed: number; // m/s (drives idle <-> walk in the visuals)
     prev: Vec3; // previous position (for velocity)
-    sensor: BodyId; // kinematic ghost capsule the view ray hits (→ bodyToCharacter)
+    sensor: BodyId; // kinematic ghost capsule the view ray hits (-> bodyToCharacter)
     emote: string | null; // one-shot clip request; the visual system consumes it
     behaviour: Behaviour;
 };
@@ -71,13 +67,13 @@ export function initCharacters(): Characters {
 // --- Crew tuning (world units; this ship is ~human-at-half-scale) ---
 const FOLLOW_RADIUS = 0.5; // agent radius navcat keeps between companions
 const FOLLOW_HEIGHT = 1.3; // agent height (a bit taller than the ~1m player)
-const FOLLOW_SPEED = 3.4; // m/s — roughly matches the player's 3.5 walk
+const FOLLOW_SPEED = 3.4; // m/s - roughly matches the player's 3.5 walk
 const STOP_DISTANCE = 1.2; // hold this far from the player instead of crowding them
 const REISSUE_DIST = 0.4; // only re-aim once the player has moved this far (avoids thrash)
 const CREW_HEAD = 0.72; // camera look-at height (~face level; crew models are ~1m tall)
 const LOOK_AT_RANGE = 6; // metres within which an idle crew member ambiently turns to face you
-const FACE_IDLE_RATE = 1.2; // per second — the ambient "turn toward you" while idle
-const FACE_TALK_RATE = 6; // per second — snappier turn while being spoken to
+const FACE_IDLE_RATE = 1.2; // per second - ambient turn toward you while idle
+const FACE_TALK_RATE = 6; // per second - snappier turn while being spoken to
 
 // --- Cat tuning ---
 const CAT_RADIUS = 0.25; // crowd avoidance radius
@@ -90,13 +86,12 @@ const ARRIVE_DIST = 0.4; // within this of its target, a cat stops for a bit
 const RETARGET_MAX = 6; // seconds before giving up on a target it can't reach
 const PAUSE_MIN = 0.8; // seconds a cat loiters between strolls (stop-and-go)
 const PAUSE_MAX = 3.0;
-const BOARD_SPEED = 2.6; // m/s — a proper dash to the ship (vs the lazy wander speed)
-const HOP_DUR = 0.6; // seconds of the finale leap into the ship (procedural — model has no jump clip)
+const BOARD_SPEED = 2.6; // m/s - a proper dash to the ship (vs the lazy wander speed)
+const HOP_DUR = 0.6; // seconds of the finale leap into the ship (procedural; model has no jump clip)
 const HOP_LIFT = 0.5; // metres of extra arc height at the peak of the hop
 const HOP_CLIP = 'Fall'; // the cat model's mid-air flair clip (no dedicated jump clip exists)
 
-// Below this speed the horizontal motion is mostly jitter, so hold the last heading rather than
-// spinning to chase noise; above it, face the travel direction.
+// Below this speed horizontal motion is mostly jitter, so hold heading; above it, face travel dir.
 const FACING_MIN_SPEED = 0.25;
 
 const GROUND_RAY_UP = 0.5;
@@ -110,8 +105,8 @@ function groundedY(physics: Physics, x: number, z: number, navY: number): number
 
 // --- Spawning ------------------------------------------------------------------------------------
 
-// Add a crowd agent + ghost sensor at `feet` and return a base Character; the caller sets the
-// behaviour. Shared by the crew and cat spawners. Returns null if the agent can't be added.
+// Add a crowd agent + ghost sensor at `feet` and return a base Character (caller sets behaviour).
+// Returns null if the agent can't be added.
 function spawnCharacter(
     physics: Physics,
     navigation: Navigation,
@@ -146,9 +141,8 @@ function spawnCharacter(
     };
 }
 
-// Spawn the crew: park each of the four companions at its room anchor (QUEST_CAST) as a STATIONARY
-// follow agent. They hold position until the quest flips them to following. Call after the navmesh
-// loads.
+// Park each companion at its room anchor (QUEST_CAST) as a stationary follow agent; holds until the
+// quest flips it to following. Call after the navmesh loads.
 export function spawnCrew(characters: Characters, navigation: Navigation, physics: Physics): void {
     for (const { model, pos, facing } of QUEST_CAST) {
         const spawn: Vec3 = [pos[0], pos[1], pos[2]];
@@ -175,14 +169,14 @@ export function spawnCrew(characters: Characters, navigation: Navigation, physic
 
 const _catSnap: Vec3 = [0, 0, 0];
 
-// Spawn the cat mob: a scatter of wandering cats around CATS_CENTER. Each is a crowd agent that
-// strolls to random navmesh points near the centre (WanderBehaviour). Call after the navmesh loads.
+// Scatter wandering cats around CATS_CENTER; each strolls to random navmesh points near the centre.
+// Call after the navmesh loads.
 export function spawnCats(characters: Characters, navigation: Navigation, physics: Physics): void {
     const maxFromCenter = CATS_SPREAD * 1.6; // reject spawns that snap far from the ship
     let spawned = 0;
     for (let i = 0; i < CATS_COUNT; i++) {
-        // On-navmesh spawn near the centre. snapToNavMesh returns the NEAREST poly, which — near a
-        // thin/edge pad — can be surprisingly far; reject those so the mob stays by the ship.
+        // snapToNavMesh returns the nearest poly, which near a thin/edge pad can be surprisingly
+        // far; reject those so the mob stays by the ship.
         let onMesh = false;
         for (let t = 0; t < 16 && !onMesh; t++) {
             const guess: Vec3 = [
@@ -214,7 +208,7 @@ export function spawnCats(characters: Characters, navigation: Navigation, physic
             ...base,
             behaviour: {
                 kind: 'wander',
-                center: [CATS_CENTER[0], CATS_CENTER[1], CATS_CENTER[2]], // wander the SHIP, not the spawn
+                center: [CATS_CENTER[0], CATS_CENTER[1], CATS_CENTER[2]], // wander the ship, not the spawn
                 radius: CATS_SPREAD,
                 state: 'paused',
                 pauseTimer: Math.random() * PAUSE_MAX, // stagger the mob's first move
@@ -234,27 +228,25 @@ export function spawnCats(characters: Characters, navigation: Navigation, physic
 
 // --- Interaction hooks (called from index) -------------------------------------------------------
 
-// Can the player talk to this character right now? Crew are always talkable; cats only while
-// loitering (not mid-finale). Others (goto/hop) are not.
+// Talkable now? Crew always; cats only while loitering (not mid-finale); goto/hop never.
 export function isTalkable(ch: Character): boolean {
     return ch.behaviour.kind === 'follow' || ch.behaviour.kind === 'wander';
 }
 
-// Flip a crew member from parked to trailing the player (the accusation conga line). No-op unless
-// it's a follow character.
+// Flip a crew member from parked to trailing the player. No-op unless it's a follow character.
 export function setCharacterFollowing(characters: Characters, id: string): void {
     const ch = characters.list.find((c) => c.id === id);
     if (ch && ch.behaviour.kind === 'follow') ch.behaviour.mode = 'following';
 }
 
-// While talking to a crew member, turn them quickly to face the player (set true on open, false on
-// close). No-op for non-follow characters.
+// Turn a crew member quickly to face the player while talking (true on open, false on close).
+// No-op for non-follow characters.
 export function setFacePlayer(ch: Character, on: boolean): void {
     if (ch.behaviour.kind === 'follow') ch.behaviour.facePlayer = on;
 }
 
-// Set/clear a cat's "being talked to" hold (it stops and faces you). On release it loiters briefly
-// before wandering off again. No-op for non-wander characters.
+// Set/clear a cat's "being talked to" hold (stops and faces you); on release it loiters briefly.
+// No-op for non-wander characters.
 export function setCatTalking(ch: Character, on: boolean): void {
     if (ch.behaviour.kind !== 'wander') return;
     ch.behaviour.talking = on;
@@ -264,9 +256,8 @@ export function setCatTalking(ch: Character, on: boolean): void {
     }
 }
 
-// Request a specific (authored) emote on the character with the given id — played once by the
-// visuals as the matching clip. Crew use Yes/No/Dance; cats use Spin/Idle. A clip the model lacks
-// is simply ignored by the visual system.
+// Request an emote on the character with the given id; played once by the visuals as the matching
+// clip. Crew use Yes/No/Dance; cats use Spin/Idle. Clips the model lacks are ignored.
 export function requestCharacterEmote(characters: Characters, id: string, emote: string): void {
     const ch = characters.list.find((c) => c.id === id);
     if (ch) ch.emote = emote;
@@ -276,8 +267,8 @@ export function requestCharacterEmote(characters: Characters, id: string, emote:
 
 const isCat = (ch: Character) => ch.model === 'cat';
 
-// Finale step 1: send every cat dashing to the ground under the ship (target snaps onto the navmesh
-// below it). They gather + wait there (goto) until hopCats fires.
+// Finale step 1: send every cat dashing to the ground under the ship; they gather and wait (goto)
+// until hopCats fires.
 export function boardCats(characters: Characters, navigation: Navigation, target: Vec3): void {
     for (const ch of characters.list) {
         if (!isCat(ch)) continue;
@@ -293,7 +284,7 @@ export function allCatsGathered(characters: Characters, navigation: Navigation, 
 }
 
 // Finale step 2: once the ship has descended to meet them, launch every gathered cat on a hop up
-// into it (arcing from where it stands to `shipPoint`). Each despawns at the end of its hop.
+// into it (arcing to `shipPoint`). Each despawns at the end of its hop.
 export function hopCats(characters: Characters, shipPoint: Vec3): void {
     for (const ch of characters.list) {
         if (!isCat(ch) || ch.behaviour.kind === 'hop') continue;
@@ -304,16 +295,16 @@ export function hopCats(characters: Characters, shipPoint: Vec3): void {
     }
 }
 
-// Finale safety net: force-remove any cats still around (e.g. a straggler that never reached the
-// ship) so nothing lingers after the ship's gone. Most despawn themselves at the end of their hop.
+// Finale safety net: force-remove any cats still around (e.g. a straggler) so nothing lingers after
+// the ship's gone. Most despawn themselves at the end of their hop.
 export function despawnCats(characters: Characters, navigation: Navigation, physics: Physics): void {
     for (const ch of [...characters.list]) {
         if (isCat(ch)) removeCharacter(characters, navigation, physics, ch);
     }
 }
 
-// Remove one character entirely (crowd agent + sensor unmap) and pull it from the list. The visual
-// system drops the mesh on the next frame (its id is no longer alive).
+// Remove one character entirely (crowd agent + sensor unmap) and pull it from the list. Visuals
+// drop the mesh next frame (its id is no longer alive).
 function removeCharacter(characters: Characters, navigation: Navigation, physics: Physics, ch: Character): void {
     removeCrowdAgent(navigation, ch.id);
     removeCharacterCollider(physics, ch.sensor);
@@ -323,8 +314,8 @@ function removeCharacter(characters: Characters, navigation: Navigation, physics
 
 // --- Per-frame update ----------------------------------------------------------------------------
 
-// Advance every character: read its agent, ground it on the collider, derive speed/facing, then run
-// its behaviour. Run AFTER the navcat crowd step (navigation.updateCrowd). Pure data — no meshes.
+// Advance every character: read its agent, ground it, derive speed/facing, then run its behaviour.
+// Run after the navcat crowd step (navigation.updateCrowd). Pure data, no meshes.
 export function updateCharacters(
     characters: Characters,
     navigation: Navigation,
@@ -332,10 +323,10 @@ export function updateCharacters(
     playerPos: Vec3,
     dt: number,
 ): void {
-    const despawn: Character[] = []; // hop finished this frame → remove after the loop
+    const despawn: Character[] = []; // hop finished this frame -> remove after the loop
     for (const ch of characters.list) {
-        // The hop is airborne + agent-independent: it drives position by a procedural arc and
-        // despawns at the end. Everything else rides the crowd agent, grounded on the collider.
+        // The hop is airborne + agent-independent: procedural arc, despawns at the end. Everything
+        // else rides the crowd agent, grounded on the collider.
         if (ch.behaviour.kind === 'hop') {
             if (updateHop(ch, ch.behaviour, dt)) despawn.push(ch);
             ch.speed = 0;
@@ -381,7 +372,7 @@ export function updateCharacters(
                 stepWander(ch, ch.behaviour, navigation, dt);
                 break;
             case 'goto':
-                // Agent-driven: the target was set on entry (boardCats); nothing to do per frame.
+                // Agent-driven: target set on entry (boardCats); nothing to do per frame.
                 break;
         }
     }
@@ -396,7 +387,7 @@ function faceIntent(ch: Character, playerPos: Vec3): { yaw: number; rate: number
     const pdz = playerPos[2] - ch.position[2];
     const d2 = pdx * pdx + pdz * pdz;
     if (b.kind === 'follow') {
-        // Ambient turn-to-face while idle in range; snappier while being talked to.
+        // Ambient turn-to-face while idle in range; snappier while talking.
         if ((b.facePlayer || d2 < LOOK_AT_RANGE * LOOK_AT_RANGE) && d2 > 0.09) {
             return { yaw: Math.atan2(pdx, pdz), rate: b.facePlayer ? FACE_TALK_RATE : FACE_IDLE_RATE };
         }
@@ -406,9 +397,9 @@ function faceIntent(ch: Character, playerPos: Vec3): { yaw: number; rate: number
     return null;
 }
 
-// Crew follow: chase the player while far, hold once inside STOP_DISTANCE so the companions don't
-// jostle the player. Re-issue the target only after the player has actually moved (so navcat isn't
-// re-planning every frame). Stationary crew just hold their anchor.
+// Crew follow: chase while far, hold inside STOP_DISTANCE so companions don't jostle the player.
+// Re-issue the target only after the player has moved (avoids re-planning every frame). Stationary
+// crew hold their anchor.
 function stepFollow(ch: Character, b: FollowBehaviour, navigation: Navigation, playerPos: Vec3): void {
     if (b.mode === 'stationary') {
         setAgentVelocity(navigation, ch.id, [0, 0, 0]); // don't let avoidance drift the anchor
@@ -426,8 +417,7 @@ function stepFollow(ch: Character, b: FollowBehaviour, navigation: Navigation, p
             b.target[2] = playerPos[2];
         }
     } else {
-        // Arrived near the player — decelerate and let the next move re-issue (target reset to
-        // here so REISSUE_DIST triggers).
+        // Arrived near the player: decelerate; reset target to here so REISSUE_DIST re-triggers.
         setAgentVelocity(navigation, ch.id, [0, 0, 0]);
         b.target[0] = px;
         b.target[1] = ch.position[1];
@@ -438,7 +428,7 @@ function stepFollow(ch: Character, b: FollowBehaviour, navigation: Navigation, p
 const _wanderSnap: Vec3 = [0, 0, 0];
 
 // Cat wander: stop-and-go strolls to random navmesh points near the centre, or hold + face the
-// player while being talked to. A leash pulls it back if crowd shoving strays it too far.
+// player while talking. A leash pulls it back if crowd shoving strays it too far.
 function stepWander(ch: Character, b: WanderBehaviour, navigation: Navigation, dt: number): void {
     const x = ch.position[0];
     const z = ch.position[2];
@@ -449,8 +439,8 @@ function stepWander(ch: Character, b: WanderBehaviour, navigation: Navigation, d
     if (b.state === 'paused') {
         b.pauseTimer -= dt;
         if (b.pauseTimer <= 0) {
-            // Time to move: issue a fresh target and go. Crucially do NOT also zero the velocity
-            // this frame — that cancels the move target and the cat never leaves.
+            // Time to move: issue a fresh target and go. Do NOT also zero velocity this frame -
+            // that cancels the move target and the cat never leaves.
             retargetWander(ch, b, navigation);
             b.state = 'moving';
         } else {
@@ -487,8 +477,8 @@ function retargetWander(ch: Character, b: WanderBehaviour, navigation: Navigatio
     }
 }
 
-// Procedural leap: arc from where the cat left the floor up into the ship (`to`), with a parabolic
-// lift peaking mid-hop. No grounding — it's airborne. Returns true when the hop is done (despawn).
+// Procedural leap: arc from where the cat left the floor up into the ship (`to`), parabolic lift
+// peaking mid-hop. No grounding, it's airborne. Returns true when the hop is done (despawn).
 function updateHop(ch: Character, b: HopBehaviour, dt: number): boolean {
     b.timer -= dt;
     const p = Math.min(1, 1 - b.timer / HOP_DUR);

@@ -1,12 +1,11 @@
-// A minimal HUD crosshair: a small white dot at screen centre. The "interact" affordance
-// (name + TALK prompt) lives on the floating companion nameplate now (see nameplate.ts).
+// Minimal HUD crosshair: a small white dot at screen centre. The interact affordance (name + TALK
+// prompt) lives on the companion nameplate (see nameplate.ts).
 export type Crosshair = {
     dot: HTMLDivElement;
 };
 
 export function createCrosshair(): Crosshair {
-    // Small white circle, dead centre, with a soft dark outline so it reads on both
-    // bright and dark splats.
+    // Small white circle, dead centre, with a soft dark outline so it reads on bright and dark splats.
     const dot = document.createElement('div');
     dot.className = 'hud'; // debug "hud" toggle hides everything with this class at once
     dot.style.cssText = [

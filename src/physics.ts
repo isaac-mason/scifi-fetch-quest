@@ -66,10 +66,8 @@ export function updatePhysics(physics: Physics, dt: number): void {
     updateWorld(physics.world, undefined, Math.min(dt, MAX_DELTA));
 }
 
-/**
- * Add the splat scene's collision geometry as a single static triangle-mesh body.
- * Returns the body id — don't hold the body reference, it's pooled (see crashcat README).
- */
+// Add the splat scene's collision geometry as a single static triangle-mesh body.
+// Returns the body id - don't hold the body reference, it's pooled (see crashcat README).
 export function createSplatCollider(physics: Physics, collider: Collider): BodyId {
     const shape = triangleMesh.create({
         positions: Array.from(collider.positions),
@@ -85,14 +83,9 @@ export function createSplatCollider(physics: Physics, collider: Collider): BodyI
     return body.id;
 }
 
-/**
- * Add a kinematic capsule that stands in for a character (companion) in the physics
- * world, so the view ray can hit them. It doesn't collide with anything (GHOST layer)
- * — it exists purely as a raycast target. Records the body→character mapping and
- * returns the body id; move it each frame with moveCharacterCollider.
- *
- * `feet` is the character's ground position; the capsule is offset up to stand on it.
- */
+// Add a kinematic capsule standing in for a character, so the view ray can hit them. It doesn't
+// collide (GHOST layer) - purely a raycast target. Records the body->character mapping and returns
+// the body id; move it each frame with moveCharacterCollider. `feet` is the ground position.
 export function addCharacterCollider(physics: Physics, characterId: string, feet: Vec3, radius: number, height: number): BodyId {
     // A capsule's total height is cylinder + a radius hemisphere at each end.
     const halfHeightOfCylinder = Math.max(0.01, height / 2 - radius);
@@ -114,15 +107,15 @@ export function addCharacterCollider(physics: Physics, characterId: string, feet
     return body.id;
 }
 
-// Teleport a character's kinematic capsule to follow its ground position. Cheap — we
-// only need it in the right place for raycasts, not for swept kinematic collisions.
+// Teleport a character's kinematic capsule to its ground position - only needed in place for
+// raycasts, not for swept kinematic collisions.
 export function moveCharacterCollider(physics: Physics, bodyId: BodyId, feet: Vec3): void {
     const body = rigidBody.get(physics.world, bodyId);
     if (body) rigidBody.setPosition(physics.world, body, feet, true);
 }
 
-// Stop a character's sensor being hittable (e.g. a cat that leapt aboard and despawned). Unmaps it
-// from the view ray; the inert ghost body is left in place (cheap, never queried again).
+// Stop a character's sensor being hittable (e.g. a despawned cat). Unmaps it from the view ray;
+// the inert ghost body is left in place (never queried again).
 export function removeCharacterCollider(physics: Physics, bodyId: BodyId): void {
     physics.bodyToCharacter.delete(bodyId);
 }
@@ -141,9 +134,8 @@ groundSettings.collideWithBackfaces = true;
 const _groundOrigin: Vec3 = [0, 0, 0];
 const _groundDir: Vec3 = [0, -1, 0];
 
-// Cast a ray straight down from `fromY` at (x, z) against the level collider and return the
-// floor Y it hits (or null if nothing within `maxDist`). Used to sit creatures on the real
-// collider surface, which the navmesh only approximates.
+// Cast a ray straight down from `fromY` at (x, z) and return the floor Y it hits (or null within
+// `maxDist`). Sits creatures on the real collider surface, which the navmesh only approximates.
 export function groundAt(physics: Physics, x: number, z: number, fromY: number, maxDist: number): number | null {
     _groundOrigin[0] = x;
     _groundOrigin[1] = fromY;
@@ -153,4 +145,21 @@ export function groundAt(physics: Physics, x: number, z: number, fromY: number, 
     castRay(physics.world, groundCollector, groundSettings, _groundOrigin, _groundDir, maxDist, groundFilter);
     if (groundCollector.hit.status !== CastRayStatus.COLLIDING) return null;
     return fromY - groundCollector.hit.fraction * maxDist;
+}
+
+const _rcOrigin: Vec3 = [0, 0, 0];
+const _rcDir: Vec3 = [0, 0, 0];
+
+// Cast a ray from `origin` along unit vector `dir`, returning the hit distance (or `maxDist` if no
+// hit). Reuses the ground filter. Used for shadow visibility: is a wall between camera and character?
+export function raycastCollider(physics: Physics, origin: Vec3, dir: Vec3, maxDist: number): number {
+    _rcOrigin[0] = origin[0];
+    _rcOrigin[1] = origin[1];
+    _rcOrigin[2] = origin[2];
+    _rcDir[0] = dir[0];
+    _rcDir[1] = dir[1];
+    _rcDir[2] = dir[2];
+    groundCollector.reset();
+    castRay(physics.world, groundCollector, groundSettings, _rcOrigin, _rcDir, maxDist, groundFilter);
+    return groundCollector.hit.status === CastRayStatus.COLLIDING ? groundCollector.hit.fraction * maxDist : maxDist;
 }

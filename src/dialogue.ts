@@ -1,26 +1,14 @@
-// A radial dialogue menu. The NPC's line shows in a panel; the player's responses sit on a
-// wheel around the crosshair. A needle grows from the centre toward your aim and a centre hub
-// lights up with the current pick, so it's readable at a glance.
-//
-// Input, two ways:
-//   • Desktop (pointer-locked): the mouse STAYS locked — flick toward a response to aim, then
-//     left-click to pick (number keys 1-3 also work). The controller is paused
-//     (setControlsPaused) so the same deltas drive the wheel instead of the camera.
-//   • Touch: drag from the centre to aim (or just tap toward a response) and lift to pick.
-//
-// Then the NPC's reply shows; click / tap / space / E continues. Self-contained DOM overlay
-// (like nameplate/crosshair) — owns none of the quest logic, just the interaction. The caller
-// opens a node and gets the chosen index back.
+// Radial dialogue menu: NPC line in a panel, player responses on a wheel around the crosshair.
+// Desktop stays pointer-locked (flick to aim, click/1-3 to pick, controller paused); touch drags
+// from centre and lifts to pick. Self-contained DOM overlay; caller opens a node, gets the index.
 
 export type DialogueChoice = { label: string; reply: string; emote: string };
-// `emote` — the clip the speaker plays as this line is delivered (authored per line, never random).
-// A node's `emote` punctuates its opening line; a choice's `emote` punctuates its reply. Every line
-// carries one (crew clips: Yes/No/Dance; cat clips: Spin/Idle).
+// `emote` - the clip the speaker plays as this line is delivered (authored per line, never random).
 export type DialogueNode = { speaker: string; text: string; choices: DialogueChoice[]; emote: string };
 
 import { blip, charPitch, speakerPitch } from './voice';
 
-// Coarse pointer → no pointer lock / mouse deltas, so use absolute touch-position aiming.
+// Coarse pointer -> no pointer lock / mouse deltas, so use absolute touch-position aiming.
 const IS_TOUCH = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
 
 // Screen-space unit directions (x right, y down) the response chips sit along, by choice count.
@@ -40,9 +28,8 @@ const SENS = 0.9; // desktop: aim-pixels per mouse-move pixel (flick sensitivity
 const MIN_ALIGN = 0.3; // min dot(aim, dir) to count as pointing at a chip
 const NEEDLE_MIN = 5; // show the needle once the aim pushes past this many px
 
-// Accent lives in one custom prop (--acc) — swap it to retheme the whole wheel. No
-// backdrop-filter (too costly over the live splat scene) and no glows: opaque panels +
-// the accent colour carry legibility instead.
+// Accent lives in one custom prop (--acc) - swap it to retheme the whole wheel. No backdrop-filter
+// (too costly over the live splat scene) and no glows; opaque panels + accent carry legibility.
 const CSS = `
 .dlg-root { position:fixed; inset:0; z-index:1002; pointer-events:none; display:none; font-family:monospace; --acc:#ffb454; }
 .dlg-root.dlg-open { display:block; }
@@ -77,10 +64,9 @@ const CSS = `
 .dlg-hidden { display:none; }
 `;
 
-// 'prompt' = reading the NPC's line (wheel hidden) → 'choosing' = wheel revealed → 'reply' =
-// showing the NPC's comeback. The two-step (read, then reveal) stops the eye jumping to the
-// responses before you know what you're answering. 'line' = a wheel-less line the player just
-// reads and clicks past (used by showLine for NPC-to-NPC exchanges you watch).
+// 'prompt' = reading the NPC's line (wheel hidden) -> 'choosing' = wheel revealed -> 'reply' =
+// showing the comeback. Two-step read-then-reveal stops the eye jumping to the responses early.
+// 'line' = a wheel-less line the player reads and clicks past (showLine, NPC-to-NPC exchanges).
 type Phase = 'prompt' | 'choosing' | 'reply' | 'line';
 
 export type Dialogue = {
@@ -103,7 +89,7 @@ export type Dialogue = {
     deadzone: number; // below this aim magnitude, nothing is highlighted
     onDone: ((choiceIndex: number) => void) | null;
     lineDone: (() => void) | null; // continue callback for a 'line' (showLine)
-    onSpeak: ((emote: string) => void) | null; // fired as each line starts typing; passes the line's authored emote
+    onSpeak: ((emote: string) => void) | null; // fired as each line starts typing; passes the authored emote
     cleanup: (() => void) | null;
     // Typewriter (animalese) state: text reveals char-by-char with a blip per char.
     typing: boolean;
@@ -165,7 +151,7 @@ export function createDialogue(): Dialogue {
     };
 }
 
-// --- Animalese typewriter: reveal `text` a character at a time, blipping per character. ---
+// Animalese typewriter: reveal `text` a character at a time, blipping per character.
 const TYPE_CPS = 34; // characters/second
 
 function typeText(d: Dialogue, speaker: string, text: string, emote: string): void {
@@ -175,7 +161,7 @@ function typeText(d: Dialogue, speaker: string, text: string, emote: string): vo
     d.typing = true;
     d.speakerBase = speakerPitch(speaker);
     d.body.textContent = '';
-    d.onSpeak?.(emote); // let the caller punctuate the line with its authored emote
+    d.onSpeak?.(emote); // let the caller punctuate the line with its emote
     d.typeTimer = window.setInterval(() => {
         if (d.typeIdx >= text.length) {
             completeType(d);
@@ -183,12 +169,12 @@ function typeText(d: Dialogue, speaker: string, text: string, emote: string): vo
         }
         const ch = text[d.typeIdx++];
         d.body.textContent = text.slice(0, d.typeIdx);
-        // Blip on every other non-space character — softer, less machine-gun than one per char.
+        // Blip on every other non-space char - softer, less machine-gun than one per char.
         if (ch.trim() && d.typeIdx % 2 === 0) blip(charPitch(ch, d.speakerBase));
     }, 1000 / TYPE_CPS);
 }
 
-// Finish the reveal instantly (a click during typing fast-forwards it, AC-style).
+// Finish the reveal instantly (a click during typing fast-forwards it).
 function completeType(d: Dialogue): void {
     clearInterval(d.typeTimer);
     d.typeTimer = 0;
@@ -212,14 +198,14 @@ function layout(d: Dialogue): void {
         const dir = dirs[i] ?? [0, 0];
         el.style.left = `${dir[0] * d.r}px`;
         el.style.top = `${dir[1] * d.r}px`;
-        // Anchor each chip so its label grows AWAY from the wheel centre — right-anchor the left
-        // chip, left-anchor the right one, etc. — so long labels never collide in the middle.
+        // Anchor each chip so its label grows away from the wheel centre (right-anchor the left
+        // chip, left-anchor the right, etc.) so long labels never collide in the middle.
         el.style.setProperty('--tx', dir[0] < -0.3 ? '-100%' : dir[0] > 0.3 ? '0%' : '-50%');
         el.style.setProperty('--ty', dir[1] < -0.3 ? '-100%' : dir[1] > 0.3 ? '0%' : '-50%');
     });
 }
 
-// Which response the aim currently points at (-1 = none / in the deadzone).
+// Which response the aim points at (-1 = none / in the deadzone).
 function highlighted(d: Dialogue): number {
     const mag = Math.hypot(d.aim.x, d.aim.y);
     if (mag < d.deadzone || !d.node) return -1;
@@ -238,7 +224,7 @@ function highlighted(d: Dialogue): number {
     return best;
 }
 
-// Redraw the needle (length + angle = aim) + chip highlight + centre hub while choosing.
+// Redraw the needle (length + angle = aim), chip highlight, and centre hub while choosing.
 function render(d: Dialogue): void {
     const mag = Math.hypot(d.aim.x, d.aim.y);
     if (mag > NEEDLE_MIN) {
@@ -257,7 +243,7 @@ function render(d: Dialogue): void {
     d.hub.textContent = hl >= 0 ? String(hl + 1) : '·';
 }
 
-// Set the aim from an absolute screen point (touch), relative to screen centre, clamped.
+// Set the aim from an absolute screen point (touch), relative to centre, clamped.
 function aimFromPoint(d: Dialogue, clientX: number, clientY: number): void {
     let x = clientX - window.innerWidth / 2;
     let y = clientY - window.innerHeight / 2;
@@ -270,8 +256,8 @@ function aimFromPoint(d: Dialogue, clientX: number, clientY: number): void {
     d.aim.y = y;
 }
 
-// Advance from a chosen response to the NPC's reply (or straight to done if there's no reply
-// — an empty reply is how throwaway one-liner barks close on a single click).
+// Advance from a chosen response to the NPC's reply (or straight to done if there's no reply -
+// an empty reply is how throwaway one-liner barks close on a single click).
 function choose(d: Dialogue, i: number): void {
     if (!d.node) return;
     d.choiceIdx = i;
@@ -281,7 +267,7 @@ function choose(d: Dialogue, i: number): void {
     }
     d.phase = 'reply';
     d.wheel.classList.add('dlg-hidden');
-    d.speaker.textContent = d.node.speaker ? `${d.node.speaker} ` : ''; // reply is the NPC (matters when the player spoke first)
+    d.speaker.textContent = d.node.speaker ? `${d.node.speaker} ` : ''; // reply is the NPC (matters when player spoke first)
     d.hint.textContent = IS_TOUCH ? 'tap to continue' : '‹click› continue';
     typeText(d, d.node.speaker, d.node.choices[i].reply, d.node.choices[i].emote);
 }
@@ -294,8 +280,8 @@ function reveal(d: Dialogue): void {
     render(d);
 }
 
-// Confirm the aimed response. A single-choice node (e.g. a bark) confirms on any click, no
-// aiming needed; otherwise the aim must be pointing at a chip.
+// Confirm the aimed response. A single-choice node (e.g. a bark) confirms on any click;
+// otherwise the aim must point at a chip.
 function confirm(d: Dialogue): void {
     if (d.node && d.node.choices.length === 1) {
         choose(d, 0);
@@ -321,8 +307,8 @@ function finish(d: Dialogue): void {
     cb?.(i);
 }
 
-// Open a dialogue node. `onDone(choiceIndex)` fires once the player picks a response and
-// dismisses the reply. The caller should pause the controller (setControlsPaused) around this.
+// Open a dialogue node. `onDone(choiceIndex)` fires once the player picks and dismisses the reply.
+// Caller should pause the controller (setControlsPaused) around this.
 export function openDialogue(
     d: Dialogue,
     node: DialogueNode,
@@ -347,8 +333,8 @@ export function openDialogue(
         return el;
     });
 
-    // An empty `text` means the PLAYER speaks first: skip the NPC opener and drop straight to the
-    // response wheel, so you pick your line before they react (used when accusing suspects).
+    // Empty `text` means the player speaks first: skip the NPC opener, drop straight to the
+    // response wheel so you pick your line before they react (used when accusing suspects).
     if (!node.text.trim()) {
         d.phase = 'choosing';
         d.speaker.textContent = '';
@@ -371,8 +357,8 @@ export function openDialogue(
     wireInputs(d);
 }
 
-// Show a single line the player just reads and clicks past — no wheel, no choice. Used by the
-// scene runner for NPC-to-NPC exchanges you watch. `onContinue` fires on the click/tap/key.
+// Show a single line the player reads and clicks past - no wheel, no choice (NPC-to-NPC exchanges).
+// `onContinue` fires on the click/tap/key.
 export function showLine(
     d: Dialogue,
     speaker: string,
@@ -408,10 +394,10 @@ function advanceLine(d: Dialogue): void {
     cb?.();
 }
 
-// A press/tap that advances whatever phase we're in (shared by mouse click + touch end + keys).
+// A press/tap that advances the current phase (shared by mouse click + touch end + keys).
 function primaryAction(d: Dialogue): void {
     if (d.typing) {
-        completeType(d); // first press fast-forwards the reveal, second one advances
+        completeType(d); // first press fast-forwards the reveal, second advances
         return;
     }
     if (d.phase === 'line') advanceLine(d);

@@ -15,12 +15,11 @@ import * as THREE from 'three';
 
 import { NAVMESH_URL } from './scene';
 
-const CROWD_MAX_AGENT_RADIUS = 0.3; // ≥ the largest agent radius in the crowd (companions + player proxy)
+const CROWD_MAX_AGENT_RADIUS = 0.3; // >= the largest agent radius in the crowd (companions + player proxy)
 const FIND_HALF_EXTENTS: Vec3 = [0.5, 1, 0.5];
 
-// The player is represented in the crowd by a target-less proxy agent, pinned to the
-// player's feet each frame (see updatePlayerAgent). This lets the companions' obstacle
-// avoidance / separation treat the player as a moving navmesh obstacle for free.
+// The player is a target-less proxy agent in the crowd, pinned to the player's feet each frame
+// (see updatePlayerAgent), so companion avoidance/separation treats the player as a moving obstacle.
 const PLAYER_AGENT_RADIUS = 0.4; // matches the player capsule radius (character.ts)
 const PLAYER_AGENT_HEIGHT = 1; // matches the player height
 
@@ -64,8 +63,8 @@ export async function loadNavigation(navigation: Navigation): Promise<void> {
 
     navigation.navMesh = navMesh;
     navigation.crowd = crowd.create(CROWD_MAX_AGENT_RADIUS);
-    // Default placement tolerance is just maxAgentRadius (tiny) — widen it so an
-    // agent snaps onto the navmesh even if its spawn point isn't exactly on a poly.
+    // Default placement tolerance is just maxAgentRadius (tiny); widen it so an agent snaps onto
+    // the navmesh even if its spawn point isn't exactly on a poly.
     navigation.crowd.agentPlacementHalfExtents = [1, 2, 1];
 }
 
@@ -101,8 +100,8 @@ export function removeCrowdAgent(navigation: Navigation, agentId: string): void 
     if (navigation.crowd) crowd.removeAgent(navigation.crowd, agentId);
 }
 
-// Snap a world point onto the nearest navmesh poly. Returns false if none is
-// within the search box. Also used by recovery (re-grounding an off-mesh creature).
+// Snap a world point onto the nearest navmesh poly; false if none within the search box.
+// Also used by recovery (re-grounding an off-mesh creature).
 export function snapToNavMesh(navigation: Navigation, point: Vec3, out: Vec3): boolean {
     if (!navigation.navMesh) return false;
     findNearestPoly(_nearest, navigation.navMesh, point, FIND_HALF_EXTENTS, DEFAULT_QUERY_FILTER);
@@ -128,8 +127,8 @@ export function computePath(navigation: Navigation, from: Vec3, to: Vec3): Vec3[
     return res.path.map((pt) => [pt.position[0], pt.position[1], pt.position[2]] as Vec3);
 }
 
-// Add the player's proxy agent to the crowd (target-less — it's driven by hand via
-// updatePlayerAgent, not by steering). Call once after the navmesh loads.
+// Add the player's proxy agent to the crowd (target-less; driven by hand via updatePlayerAgent, not
+// by steering). Call once after the navmesh loads.
 export function addPlayerAgent(navigation: Navigation, position: Vec3): void {
     const params = makeAgentParams(PLAYER_AGENT_RADIUS, PLAYER_AGENT_HEIGHT, 4);
     navigation.playerAgentId = addCrowdAgent(navigation, position, params);
@@ -137,11 +136,10 @@ export function addPlayerAgent(navigation: Navigation, position: Vec3): void {
 
 const _playerSnap: Vec3 = [0, 0, 0];
 
-// Pin the player's proxy agent to the player each frame. Call BEFORE updateCrowd so
-// the companions steer around where the player is (and, via velocity, where they're
-// headed). We snap to the navmesh so the proxy stays on the floor the companions walk;
-// off-mesh (mid-jump) we fall back to the raw position. The agent has no target, so
-// nothing steers it — we fully overwrite its transform, so it never drifts.
+// Pin the player's proxy agent to the player each frame. Call BEFORE updateCrowd so companions
+// steer around where the player is (and, via velocity, where they're headed). Snap to the navmesh
+// so the proxy stays on the walkable floor; off-mesh (mid-jump) fall back to the raw position.
+// The agent has no target, so we fully overwrite its transform and it never drifts.
 export function updatePlayerAgent(navigation: Navigation, position: Vec3, velocity: Vec3): void {
     if (!navigation.crowd || navigation.playerAgentId === null) return;
     const agent = navigation.crowd.agents[navigation.playerAgentId];
@@ -157,7 +155,7 @@ export function updatePlayerAgent(navigation: Navigation, position: Vec3, veloci
         agent.position[2] = position[2];
     }
 
-    // Feed the horizontal velocity so RVO anticipates our motion (crowd is 2.5D → no y).
+    // Feed the horizontal velocity so RVO anticipates our motion (crowd is 2.5D, no y).
     agent.velocity[0] = velocity[0];
     agent.velocity[1] = 0;
     agent.velocity[2] = velocity[2];

@@ -1,7 +1,6 @@
-// The start prompt: a tiny "click to play" just above the crosshair over the loaded scene (no
-// title card). A transparent full-screen catcher takes the click — which captures the pointer
-// (desktop) + kicks off the intro — then removes itself. It's a real user gesture, so
-// pointer-lock + audio are allowed.
+// The start prompt: a tiny "click to play" above the crosshair. A transparent full-screen catcher
+// takes the click (a real user gesture, so pointer-lock + audio are allowed), captures the pointer,
+// kicks off the intro, then removes itself.
 
 const IS_TOUCH = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
 

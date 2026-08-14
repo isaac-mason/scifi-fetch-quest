@@ -2,40 +2,36 @@ import { kcc } from 'crashcat';
 import type { Vec3 } from 'mathcat';
 import type * as THREE from 'three';
 
-import { type Character, EYE_HEIGHT } from './character-controller';
+import { type Character, EYE_HEIGHT, updateCharacterController } from './character-controller';
+import { createInput, type Input } from './input';
+import type { Physics } from './physics';
 import { CHARACTER_LOOK_TARGET, CHARACTER_SPAWN } from './scene';
 
 const LOOK_SENSITIVITY = 0.0022; // radians per pixel of mouse movement
 const PITCH_LIMIT = Math.PI / 2 - 0.05; // stop just short of straight up/down
 
 // --- View bob (ported verbatim from makecat's character-controller bob math) ---
-// Phase velocity is a linear map of actual horizontal speed → angular rate, capped
-// so a fast slide can't spin the cycle unbounded. One bob cycle is 2π radians.
+// Phase velocity maps horizontal speed -> angular rate, capped so a fast slide can't spin the cycle
+// unbounded. One bob cycle is 2*pi radians.
 const BOB_PHASE_VEL_PER_M_S = 2.5;
 const BOB_PHASE_VEL_MAX = 22;
-// Extra phase-rate multiplier while sprinting — sprint speed alone only nudges the
-// phase ~30% above walk, so this makes the run cadence read as clearly faster.
+// Extra phase-rate multiplier while sprinting, so the run cadence reads as clearly faster.
 const BOB_PHASE_VEL_SPRINT_FACTOR = 1.1;
 // Lerp rates for the amplitude ramp (per second, used as `dt * rate`).
 const BOB_AMP_LERP_RATE = 15;
 const BOB_OFFSET_LERP_RATE = 15;
-// On landing, jam the phase to the bottom of the cycle (sin = −1) so the walk
-// restarts on a foot-plant.
+// On landing, jam the phase to the bottom of the cycle (sin = -1) so the walk restarts on a foot-plant.
 const BOB_LANDING_PHASE = (3 * Math.PI) / 2;
 
 type BobStatus = 'walk' | 'run' | 'crouch' | 'idle' | 'fall' | 'fly';
 
-// Per-state amplitude targets (metres), verbatim from makecat. clingy-space-friends has no
-// crouch/noclip inputs, so walk/run/idle/fall are reachable here; crouch/fly are kept
-// for fidelity. These deviate from the source's raw numbers in two deliberate ways:
-//   1. Scaled down (~0.45×) — the source's amplitudes are absolute metres tuned for a
-//      1.62 m eye height; clingy-space-friends's eye sits at 0.75 m, so the same numbers read
-//      ~2× too intense here.
-//   2. Lateral-dominant — the source's *camera* walk bob is vertical-only; its
-//      side-to-side motion lived in the (viewmodel-only) item sway, which we don't
-//      have. We fold that side-to-side into the camera by giving walk a horizontal
-//      component larger than its vertical one.
-// Lateral uses sin(phase/2) (half frequency → slow sway); vertical uses sin(phase).
+// Per-state amplitude targets (metres), verbatim from makecat. Only walk/run/idle/fall are reachable
+// here (no crouch/noclip); crouch/fly kept for fidelity. Two deliberate deviations from the source:
+//   1. Scaled down (~0.45x) - source amplitudes are tuned for a 1.62m eye height; ours sits at
+//      0.75m, so the same numbers read ~2x too intense.
+//   2. Lateral-dominant - the source's camera bob is vertical-only (side-to-side lived in the
+//      viewmodel item sway we don't have), so walk gets a horizontal component larger than vertical.
+// Lateral uses sin(phase/2) (half frequency -> slow sway); vertical uses sin(phase).
 const BOB_STATE_VALUES: Record<BobStatus, { horizontalAmplitude: number; verticalAmplitude: number }> = {
     walk: { horizontalAmplitude: 0.022, verticalAmplitude: 0.012 },
     run: { horizontalAmplitude: 0.032, verticalAmplitude: 0.018 },
@@ -52,25 +48,20 @@ export type FirstPersonControls = {
     enabled: boolean;
     /** Is the pointer currently locked (mouse driving the look)? */
     locked: boolean;
-    /** When true, the controller keeps pointer lock but stops driving look/movement/interact
-     *  — so an overlay (e.g. the dialogue radial) can read the raw mouse deltas instead.
-     *  Toggle via setControlsPaused. */
+    /** When true, keeps pointer lock but stops driving look/movement/interact, so an overlay
+     *  (e.g. the dialogue radial) can read the raw mouse deltas. Toggle via setControlsPaused. */
     paused: boolean;
     yaw: number;
     pitch: number;
-    input: {
-        forward: boolean;
-        backward: boolean;
-        left: boolean;
-        right: boolean;
-        jump: boolean;
-        sprint: boolean;
-        /** One-shot interact (left-click while locked). Set on click; the loop consumes it. */
-        interact: boolean;
-    };
+    /** Device-agnostic input intent (analog move axis + buttons) this controller produces; see
+     *  input.ts. Read by the character controller + interaction. */
+    input: Input;
+    /** Keyboard binding state: which movement keys are held. Derived into input.move by
+     *  applyMoveKeys - a keyboard-specific detail, kept off the device-agnostic Input. */
+    moveKeys: { forward: boolean; backward: boolean; left: boolean; right: boolean };
     /** View-bob runtime state (see updateCameraBob). */
     bob: {
-        /** bob phase in radians; advances at `phaseVelocity · dt` while moving. */
+        /** bob phase in radians; advances at `phaseVelocity * dt` while moving. */
         phase: number;
         sineValue: number;
         sineValuePrevious: number;
@@ -89,7 +80,7 @@ export type FirstPersonControls = {
     smoothedFeetY: number;
 };
 
-// Initial look angles from the spawn → look-target direction (see scene.ts).
+// Initial look angles from the spawn -> look-target direction (see scene.ts).
 function initialAngles(): { yaw: number; pitch: number } {
     const dx = CHARACTER_LOOK_TARGET[0] - CHARACTER_SPAWN[0];
     const dy = CHARACTER_LOOK_TARGET[1] - (CHARACTER_SPAWN[1] + EYE_HEIGHT);
@@ -112,7 +103,8 @@ export function initFirstPersonControls(camera: THREE.PerspectiveCamera, domElem
         paused: false,
         yaw,
         pitch,
-        input: { forward: false, backward: false, left: false, right: false, jump: false, sprint: false, interact: false },
+        input: createInput(),
+        moveKeys: { forward: false, backward: false, left: false, right: false },
         bob: {
             phase: 0,
             sineValue: 0,
@@ -149,20 +141,20 @@ export function initFirstPersonControls(camera: THREE.PerspectiveCamera, domElem
         switch (code) {
             case 'KeyW':
             case 'ArrowUp':
-                controls.input.forward = down;
-                return true;
+                controls.moveKeys.forward = down;
+                break;
             case 'KeyS':
             case 'ArrowDown':
-                controls.input.backward = down;
-                return true;
+                controls.moveKeys.backward = down;
+                break;
             case 'KeyA':
             case 'ArrowLeft':
-                controls.input.left = down;
-                return true;
+                controls.moveKeys.left = down;
+                break;
             case 'KeyD':
             case 'ArrowRight':
-                controls.input.right = down;
-                return true;
+                controls.moveKeys.right = down;
+                break;
             case 'Space':
                 controls.input.jump = down;
                 return true;
@@ -173,6 +165,8 @@ export function initFirstPersonControls(camera: THREE.PerspectiveCamera, domElem
             default:
                 return false;
         }
+        applyMoveKeys(controls); // a movement key changed -> refresh the analog axis
+        return true;
     };
 
     window.addEventListener('keydown', (e) => {
@@ -186,38 +180,37 @@ export function initFirstPersonControls(camera: THREE.PerspectiveCamera, domElem
     return controls;
 }
 
-// Pause/resume the controller WITHOUT releasing pointer lock: freezes look, movement and
-// interact so an overlay can consume the mouse (see the dialogue radial). Clears held movement
-// on pause so you don't keep drifting. The pointer stays locked, so mouse deltas still flow —
-// the overlay reads them via its own listeners.
+// Pause/resume the controller without releasing pointer lock: freezes look/movement/interact so an
+// overlay can consume the mouse. Clears held movement on pause. Pointer stays locked, so mouse
+// deltas still flow to the overlay's own listeners.
 export function setControlsPaused(controls: FirstPersonControls, paused: boolean): void {
     controls.paused = paused;
-    if (paused) {
-        controls.input.forward = false;
-        controls.input.backward = false;
-        controls.input.left = false;
-        controls.input.right = false;
-        controls.input.jump = false;
-        controls.input.sprint = false;
-    }
+    if (paused) clearHeld(controls);
 }
 
 // Release the mouse and clear held keys (e.g. when switching to orbit mode).
 export function releaseFirstPersonControls(controls: FirstPersonControls): void {
     if (controls.locked) document.exitPointerLock();
-    controls.input.forward = false;
-    controls.input.backward = false;
-    controls.input.left = false;
-    controls.input.right = false;
-    controls.input.jump = false;
-    controls.input.sprint = false;
+    clearHeld(controls);
     controls.input.interact = false;
 }
 
-// Smoothly turn the view to look at a world point (used during dialogue / the launch, while the
-// controller is paused). Lerps yaw/pitch toward the aim each frame, so when control resumes the
-// mouse picks up from wherever it settled — no snap. Matches updateFirstPersonCamera's angle
-// convention (forward = (-sin yaw, …, -cos yaw), pitch on the up axis).
+// Release all held movement/jump/sprint so the character stops (keydown is gated while paused, so
+// keys pressed before a pause don't linger). Clears the keyboard binding state AND the derived axis.
+function clearHeld(controls: FirstPersonControls): void {
+    controls.moveKeys.forward = false;
+    controls.moveKeys.backward = false;
+    controls.moveKeys.left = false;
+    controls.moveKeys.right = false;
+    controls.input.move[0] = 0;
+    controls.input.move[1] = 0;
+    controls.input.jump = false;
+    controls.input.sprint = false;
+}
+
+// Smoothly turn the view to look at a world point (during dialogue / the launch, while paused).
+// Lerps yaw/pitch toward the aim each frame, so control resumes without a snap. Matches
+// updateFirstPersonCamera's angle convention (forward = (-sin yaw, ..., -cos yaw), pitch on up).
 const FACE_RATE = 6; // per-second approach toward the target look angles
 export function faceFirstPersonToward(controls: FirstPersonControls, character: Character, target: Vec3, dt: number): void {
     const ex = character.kcc.position[0];
@@ -236,17 +229,38 @@ export function faceFirstPersonToward(controls: FirstPersonControls, character: 
     controls.pitch += (targetPitch - controls.pitch) * k;
 }
 
-// Build the world-space horizontal move direction from yaw + the held keys.
-export function getMoveDirection(controls: FirstPersonControls, out: Vec3): Vec3 {
-    const f = (controls.input.forward ? 1 : 0) - (controls.input.backward ? 1 : 0);
-    const r = (controls.input.right ? 1 : 0) - (controls.input.left ? 1 : 0);
-    const sin = Math.sin(controls.yaw);
-    const cos = Math.cos(controls.yaw);
+// Refresh the analog move axis (input.move) from held keyboard keys. A key is +/-1, so a diagonal
+// is (1,1) - magnitude sqrt(2), which the controller clamps to full speed.
+function applyMoveKeys(controls: FirstPersonControls): void {
+    const k = controls.moveKeys;
+    controls.input.move[0] = (k.right ? 1 : 0) - (k.left ? 1 : 0);
+    controls.input.move[1] = (k.forward ? 1 : 0) - (k.backward ? 1 : 0);
+}
+
+// Rotate a LOCAL analog move axis (x=strafe, y=forward) by the camera yaw into a world-space
+// horizontal direction. Magnitude is preserved (analog tilt), so the caller can scale speed by it.
+function getMoveDirection(move: readonly [number, number], yaw: number, out: Vec3): Vec3 {
+    const r = move[0];
+    const f = move[1];
+    const sin = Math.sin(yaw);
+    const cos = Math.cos(yaw);
     // forward = (-sin, 0, -cos); right = (cos, 0, -sin)
     out[0] = -sin * f + cos * r;
     out[1] = 0;
     out[2] = -cos * f - sin * r;
     return out;
+}
+
+const _moveDir: Vec3 = [0, 0, 0];
+
+// Drive the player's KCC from this frame's first-person input: feed it the move direction + the
+// jump/sprint intent. No-op while the controller is disabled (orbit-camera debug mode) so the
+// character holds still. Keeps the input->controller wiring in the input layer; the KCC stays
+// input-agnostic (updateCharacter takes plain movement intent, drivable by AI or a replay too).
+export function driveCharacter(controls: FirstPersonControls, physics: Physics, character: Character, dt: number): void {
+    if (!controls.enabled) return;
+    getMoveDirection(controls.input.move, controls.yaw, _moveDir);
+    updateCharacterController(physics, character, _moveDir, controls.input, dt);
 }
 
 // Advance the view-bob for this frame. Phase velocity is driven by the character's
@@ -257,7 +271,7 @@ function updateCameraBob(controls: FirstPersonControls, velocity: Vec3, grounded
 
     bob.previousPhase = bob.phase;
 
-    // Re-anchor on landing so the cycle restarts at the bottom (sin = −1).
+    // Re-anchor on landing so the cycle restarts at the bottom (sin = -1).
     if (grounded && !bob.previousGrounded) {
         bob.phase = BOB_LANDING_PHASE;
     }
@@ -273,7 +287,7 @@ function updateCameraBob(controls: FirstPersonControls, velocity: Vec3, grounded
     if (phaseVelocity > 0) {
         bob.phase += phaseVelocity * dt;
     } else {
-        // Not moving → reset so the next walk starts at the foot-plant.
+        // Not moving -> reset so the next walk starts at the foot-plant.
         bob.phase = 0;
     }
 
@@ -295,7 +309,7 @@ function updateCameraBob(controls: FirstPersonControls, velocity: Vec3, grounded
             bob.offsetX = sineValueHalf * bob.lateralAmplitude;
         }
 
-        // Vertical: sin(phase), full sine — dips and rises.
+        // Vertical: sin(phase), full sine - dips and rises.
         bob.verticalAmplitude += (targets.verticalAmplitude - bob.verticalAmplitude) * ampK;
         if (bob.verticalAmplitude > 0) {
             bob.offsetY = sineValue * bob.verticalAmplitude;
@@ -314,9 +328,9 @@ function updateCameraBob(controls: FirstPersonControls, velocity: Vec3, grounded
 
 // Point the camera at the character's eyes and aim it from yaw/pitch, with view-bob.
 // Eye-height smoothing so bumpy collider terrain doesn't jolt the view. Only applied while
-// grounded — airborne (jumps/falls) the eye tracks the feet exactly, so those stay crisp.
-const EYE_SMOOTH_TAU = 0.09; // seconds — vertical smoothing time constant (bigger = smoother/laggier)
-const EYE_MAX_LAG = 0.35; // metres — the eye never trails the actual feet by more than this
+// grounded - airborne (jumps/falls) the eye tracks the feet exactly, so those stay crisp.
+const EYE_SMOOTH_TAU = 0.09; // seconds - vertical smoothing time constant (bigger = smoother/laggier)
+const EYE_MAX_LAG = 0.35; // metres - the eye never trails the actual feet by more than this
 
 export function updateFirstPersonCamera(controls: FirstPersonControls, character: Character, dt: number): void {
     const feet = character.kcc.position;
@@ -337,8 +351,8 @@ export function updateFirstPersonCamera(controls: FirstPersonControls, character
         controls.smoothedFeetY = feet[1];
     }
 
-    // Bob shifts the eye along the yaw-aligned right vector (lateral) and world up
-    // (vertical) — the same right = (cos yaw, 0, −sin yaw) the move code uses.
+    // Bob shifts the eye along the yaw-aligned right vector (lateral) and world up (vertical) -
+    // the same right = (cos yaw, 0, -sin yaw) the move code uses.
     const bob = controls.bob;
     const rightX = Math.cos(controls.yaw);
     const rightZ = -Math.sin(controls.yaw);

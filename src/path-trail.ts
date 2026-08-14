@@ -1,42 +1,40 @@
 import type { Vec3 } from 'mathcat';
 import * as THREE from 'three';
 
-// A guide ribbon to the current objective: a flat strip along the navcat route, stamped with
-// chevrons that scroll toward the goal. The route is recomputed every frame (so the ribbon tracks
-// the player continuously), but the CHEVRON PLACEMENT is anchored to world space so individual
-// chevrons hold their spot instead of jumping around as the path re-solves. Three things make that
-// work:
-//   1. resamplePath samples from the GOAL end → each sample sits at a fixed arc-length from the
-//      (world-fixed) goal, so the sample positions are stable frame to frame.
+// A guide ribbon to the objective: a flat strip along the navcat route, stamped with chevrons that
+// scroll toward the goal. The route is recomputed every frame, but chevron placement is anchored to
+// world space so chevrons hold their spot instead of jumping as the path re-solves:
+//   1. resamplePath samples from the goal end -> each sample sits at a fixed arc-length from the
+//      (world-fixed) goal, so sample positions are stable frame to frame.
 //   2. UVs are anchored to the goal (v = -distance-to-goal / tile), so a chevron lands on a fixed
-//      world position independent of the path's length or where the player end currently is.
+//      world position regardless of path length.
 //   3. Points are lightly eased frame-to-frame to absorb findPath's corner jitter.
 //
-// Chevrons are an ALPHA-CUTOUT texture (alphaTest, not blending): the gaps are discarded and the
-// arrows write depth, so it stays crisp against the Gaussian splats.
+// Chevrons are an alpha-cutout texture (alphaTest, not blending): gaps are discarded and arrows
+// write depth, so it stays crisp against the Gaussian splats.
 
 const SAMPLE_SPACING = 0.3; // metres between centerline samples (denser = smoother ribbon)
-const RIBBON_HALF = 0.075; // metres — half the ribbon width
+const RIBBON_HALF = 0.075; // metres - half the ribbon width
 const LIFT = 0.22; // metres above the floor
-const MAX_POINTS = 160; // centerline samples cap (⇒ 2× verts, (n-1)×6 indices)
+const MAX_POINTS = 160; // centerline samples cap (=> 2x verts, (n-1)x6 indices)
 const CHEVRON_LEN = 0.85; // metres of path per chevron tile
 const SCROLL = 0.8; // chevron tiles/sec scrolling toward the goal
 const CHAIKIN_ITERS = 2; // corner-rounding passes (kills polygonal kinks in the navcat path)
 const EASE = 0.3; // per-frame easing toward the fresh path (soaks up findPath jitter; 1 = none)
-const FADE_LEN = 1.3; // metres over which each end dithers out (0 at the very tip → 1 by here)
+const FADE_LEN = 1.3; // metres over which each end dithers out (0 at the tip -> 1 by here)
 
 export type PathTrail = {
     mesh: THREE.Mesh;
     geo: THREE.BufferGeometry;
     pos: THREE.BufferAttribute;
     uv: THREE.BufferAttribute;
-    fade: THREE.BufferAttribute; // 1 in the body → 0 at each end; dithered in the shader
+    fade: THREE.BufferAttribute; // 1 in the body -> 0 at each end; dithered in the shader
     tex: THREE.CanvasTexture;
     sampled: Vec3[]; // eased centerline actually rendered
 };
 
-// A single chevron ("^", pointing toward +v = toward the goal) drawn white-on-transparent, tiled
-// along the ribbon's length. Alpha carries the shape; alphaTest cuts the gaps.
+// A single chevron ("^", pointing toward +v = the goal) drawn white-on-transparent, tiled along
+// the ribbon. Alpha carries the shape; alphaTest cuts the gaps.
 function makeChevronTexture(): THREE.CanvasTexture {
     const S = 128;
     const cv = document.createElement('canvas');
@@ -52,7 +50,7 @@ function makeChevronTexture(): THREE.CanvasTexture {
     // Canvas y is down; CanvasTexture flips Y, so a smaller canvas-y ends up at a higher v.
     ctx.beginPath();
     ctx.moveTo(S * 0.16, S * 0.62); // left wing (low v)
-    ctx.lineTo(S * 0.5, S * 0.34); // tip (high v → points at goal)
+    ctx.lineTo(S * 0.5, S * 0.34); // tip (high v -> points at goal)
     ctx.lineTo(S * 0.84, S * 0.62); // right wing
     ctx.stroke();
     const tex = new THREE.CanvasTexture(cv);
@@ -74,7 +72,7 @@ export function createPathTrail(scene: THREE.Scene): PathTrail {
     geo.setAttribute('uv', uv);
     geo.setAttribute('fade', fade);
 
-    // Static index buffer — a quad (two tris) between each pair of adjacent centerline samples.
+    // Static index buffer: a quad (two tris) between each pair of adjacent centerline samples.
     const idx = new Uint16Array((MAX_POINTS - 1) * 6);
     for (let i = 0; i < MAX_POINTS - 1; i++) {
         const a = i * 2; // left  of sample i
@@ -101,10 +99,10 @@ export function createPathTrail(scene: THREE.Scene): PathTrail {
         depthWrite: true,
         depthTest: true,
     });
-    // Dither the ends out WITHOUT transparency: an ordered (screen-door) discard keyed to the per-
-    // vertex `fade` (1 in the body → 0 at the tips). Surviving pixels stay fully opaque + depth-
-    // writing (so no splat-blending issues); the ends just dissolve pixel-by-pixel. Interleaved
-    // gradient noise (Jimenez) is the dither threshold — cheap, stable, no lookup table.
+    // Dither the ends out without transparency: an ordered (screen-door) discard keyed to per-vertex
+    // `fade` (1 in the body -> 0 at the tips). Surviving pixels stay opaque + depth-writing, so no
+    // splat-blending issues; the ends dissolve pixel-by-pixel. Threshold is interleaved gradient
+    // noise (Jimenez): cheap, stable, no lookup table.
     mat.onBeforeCompile = (shader) => {
         shader.vertexShader = shader.vertexShader
             .replace('#include <common>', '#include <common>\nattribute float fade;\nvarying float vFade;')
@@ -126,7 +124,7 @@ export function createPathTrail(scene: THREE.Scene): PathTrail {
     return { mesh, geo, pos, uv, fade, tex, sampled: [] };
 }
 
-// Chaikin corner-cutting — rounds the polygonal navcat path so the ribbon flows through corners
+// Chaikin corner-cutting: rounds the polygonal navcat path so the ribbon flows through corners
 // instead of kinking. Endpoints (player + goal) are preserved.
 function chaikin(pts: Vec3[], iters: number): Vec3[] {
     let cur = pts;
@@ -144,13 +142,13 @@ function chaikin(pts: Vec3[], iters: number): Vec3[] {
     return cur;
 }
 
-// Resample a (Chaikin-smoothed) corner path into evenly spaced points, sampling from the GOAL end
-// so each sample sits at a fixed arc-length from the goal → world-stable positions frame to frame.
-// The leftover partial step lands at the player end (under your feet). Output is ordered
-// player → goal. The caller grounds these before handing them to setPathTrail.
+// Resample a (Chaikin-smoothed) corner path into evenly spaced points, sampling from the goal end
+// so each sample sits at a fixed arc-length from the goal (world-stable frame to frame). The
+// leftover partial step lands at the player end. Output is ordered player -> goal; the caller
+// grounds these before setPathTrail.
 export function resamplePath(corners: Vec3[]): Vec3[] {
     if (corners.length === 0) return [];
-    const rev = chaikin(corners, CHAIKIN_ITERS).reverse(); // goal → player
+    const rev = chaikin(corners, CHAIKIN_ITERS).reverse(); // goal -> player
     const out: Vec3[] = [[rev[0][0], rev[0][1], rev[0][2]]]; // goal
     let carry = 0; // leftover distance from the previous segment
     for (let i = 1; i < rev.length && out.length < MAX_POINTS; i++) {
@@ -173,11 +171,11 @@ export function resamplePath(corners: Vec3[]): Vec3[] {
     if (out.length < MAX_POINTS && Math.hypot(player[0] - tail[0], player[1] - tail[1], player[2] - tail[2]) > 0.05) {
         out.push([player[0], player[1], player[2]]);
     }
-    return out.reverse(); // player → goal
+    return out.reverse(); // player -> goal
 }
 
-// Called every frame with the fresh (grounded) centerline. Eases toward it — aligned from the GOAL
-// end so each eased point tracks the same world spot — then rebuilds the ribbon geometry with
+// Called every frame with the fresh (grounded) centerline. Eases toward it (aligned from the goal
+// end so each point tracks the same world spot), then rebuilds the ribbon geometry with
 // goal-anchored UVs so the chevrons hold their world positions.
 export function setPathTrail(trail: PathTrail, points: Vec3[]): void {
     const prev = trail.sampled;
@@ -202,8 +200,8 @@ export function setPathTrail(trail: PathTrail, points: Vec3[]): void {
     const uvArr = trail.uv.array as Float32Array;
     const fadeArr = trail.fade.array as Float32Array;
 
-    // Total arc-length up front so UVs can be anchored to the GOAL end (v = -distance-to-goal / tile).
-    // A given world point keeps the same v as the path re-solves, so its chevron doesn't jump.
+    // Total arc-length up front so UVs anchor to the goal end (v = -distance-to-goal / tile). A
+    // given world point keeps the same v as the path re-solves, so its chevron doesn't jump.
     let total = 0;
     for (let i = 1; i < n; i++) {
         const a = eased[i - 1];
@@ -217,7 +215,7 @@ export function setPathTrail(trail: PathTrail, points: Vec3[]): void {
         const prevP = eased[Math.max(0, i - 1)];
         const nextP = eased[Math.min(n - 1, i + 1)];
 
-        // Floor-plane tangent, then perpendicular (tangent × up) for the ribbon's width axis.
+        // Floor-plane tangent, then perpendicular (tangent x up) for the ribbon's width axis.
         let tx = nextP[0] - prevP[0];
         let tz = nextP[2] - prevP[2];
         const tl = Math.hypot(tx, tz) || 1e-6;
@@ -239,7 +237,7 @@ export function setPathTrail(trail: PathTrail, points: Vec3[]): void {
         posArr[vp + 4] = y;
         posArr[vp + 5] = p[2] - pz;
 
-        const v = (dist - total) / CHEVRON_LEN; // -distance-to-goal → goal-anchored, world-stable
+        const v = (dist - total) / CHEVRON_LEN; // -distance-to-goal -> goal-anchored, world-stable
         const vt = i * 4;
         uvArr[vt] = 0; // left
         uvArr[vt + 1] = v;
@@ -263,7 +261,7 @@ export function setPathTrail(trail: PathTrail, points: Vec3[]): void {
 export function hidePathTrail(trail: PathTrail): void {
     trail.mesh.visible = false;
     trail.geo.setDrawRange(0, 0);
-    trail.sampled = []; // drop history so it doesn't ease from a stale path when it reappears
+    trail.sampled = []; // drop history so it doesn't ease from a stale path on reappear
 }
 
 // Per-frame: scroll the chevrons toward the goal. Sampled v = vertex v + offset; decreasing the

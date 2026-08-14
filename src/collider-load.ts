@@ -3,12 +3,10 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import type { Collider } from './collider-schema';
 
 /**
- * Load the collision mesh from a glTF/GLB and flatten every mesh in the scene graph
- * into a single world-space triangle soup (positions + indices) — the Collider shape
- * that physics, the shadow catcher, the debug wireframe, and the probe bake all consume.
- * World matrices are baked in, so authored transforms are honoured; non-indexed prims
- * get sequential indices. (This world's collider is a single identity-transformed mesh,
- * but the merge keeps it robust to re-exports with nesting/transforms.)
+ * Load the collision mesh from a glTF/GLB and flatten every mesh into a single world-space
+ * triangle soup (positions + indices) - the Collider consumed by physics, the shadow catcher,
+ * the debug wireframe, and the probe bake. World matrices are baked in so authored transforms
+ * are honoured; non-indexed prims get sequential indices.
  */
 export async function loadCollider(url: string): Promise<Collider> {
     const gltf = await new GLTFLoader().loadAsync(url);

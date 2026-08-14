@@ -2,43 +2,32 @@ import * as THREE from 'three';
 import { LightProbeHelper } from 'three/addons/helpers/LightProbeHelper.js';
 import { LightProbeGenerator } from 'three/addons/lights/LightProbeGenerator.js';
 
-// light-probes.ts - a self-contained irradiance-probe VOLUME for three.js (+ Spark).
+// Self-contained irradiance-probe volume for three.js (+ Spark). Bakes an order-2 SH probe per
+// cell of a dense grid, packs the coefficients into a 3D-texture atlas, and samples per-fragment
+// so meshes pick up local, position-varying scene colour.
 //
-// One file, drop it in anywhere. Bake an order-2 SH probe per cell of a dense grid, pack the
-// coefficients into a 3D-texture atlas, and sample it per-fragment at runtime so meshes pick
-// up local, position-varying scene colour - varying across each surface, not one tint per mesh.
+// packProbeAtlas (writer) and the vendored GLSL getProbeVolumeIrradiance (reader) share the
+// format; unpackProbeGrid is the exact inverse and doubles as a roundtrip canary.
+// I/O stays out of this module (serialize/deserialize are pure strings); browser only, no Node.
 //
-// Both halves of the texture-format contract live here, side by side: packProbeAtlas writes
-// the atlas and the vendored GLSL (getProbeVolumeIrradiance) reads it back, so they can't
-// drift. unpackProbeGrid is the exact inverse (used by the debug gizmos) and doubles as a
-// roundtrip canary. We depend on neither three's LightProbeGrid addon nor its core shader.
-//
-// I/O stays OUT of this module: serializeProbeGridFile -> string and deserializeProbeGridFile <-
-// string are pure; the CALLER does the fetch (runtime) and the file write (bake). No Node APIs
-// - browser only (canvas/gl for capture, btoa/atob for the atlas). Tree-shakeable, so an app
-// that only imports the RUNTIME bits drops the whole BAKE section it never calls.
-//
-// Sections:  FORMAT (shared) , RUNTIME (volume material) , DEBUG (gizmos) , BAKE (offline)
+// Sections: FORMAT (shared), RUNTIME (volume material), DEBUG (gizmos), BAKE (offline)
 
 // ============================================================================
 // FORMAT - pack / unpack / (de)serialize. Shared by BAKE (writes) + RUNTIME (reads).
 // ============================================================================
 //
-// Atlas layout (packProbeAtlas and the GLSL unpack in the RUNTIME section MUST agree):
-//   - 9 order-2 SH coefficients (vec3 each) are packed across 7 RGBA sub-volumes.
-//   - The sub-volumes are stacked along Z into ONE Data3DTexture. Each occupies (nz + 2)
-//     slices: 1 padding slice at each end (a copy of the nearest edge data slice) so the
-//     hardware trilinear filter doesn't bleed across a sub-volume boundary.
-//   - Total atlas depth = 7 * (nz + 2). For sub-volume t the first DATA slice sits at
-//     atlas slice t*(nz+2) + 1.
+// Atlas layout (packProbeAtlas and the GLSL unpack must agree):
+//   - 9 order-2 SH coefficients (vec3 each) packed across 7 RGBA sub-volumes.
+//   - Sub-volumes stacked along Z into one Data3DTexture, each (nz + 2) slices: 1 padding slice
+//     per end (a copy of the nearest edge slice) so trilinear filtering doesn't bleed across a
+//     boundary. Atlas depth = 7 * (nz + 2); sub-volume t's first data slice is at t*(nz+2) + 1.
 
 const PADDING = 1; // padding slices at each end of every sub-volume (matches the GLSL unpack)
 const SUBVOLUMES = 7; // 7 RGBA textures hold the 9 vec3 SH coefficients (28 of 36 lanes used)
 
 // The 4 lanes each RGBA sub-volume `t` carries, as [coeffIndex, component] pairs
-// (component 0=x/r, 1=y/g, 2=z/b). Mirrors the GLSL unpack (c1 = vec3(s0.w, s1.xy), etc.) so
-// this stays the single source of truth for the format. A null lane is written as 0 (only the
-// last lane of sub-volume 6 is unused).
+// (component 0=x/r, 1=y/g, 2=z/b). Mirrors the GLSL unpack; single source of truth for the
+// format. A null lane is written as 0 (only sub-volume 6's last lane is unused).
 type Lane = [number, number] | null;
 const SUBVOLUME_LANES: Lane[][] = [
     [
@@ -94,8 +83,8 @@ function laneValue(sh: THREE.SphericalHarmonics3, lane: Lane): number {
     return lane[1] === 0 ? c.x : lane[1] === 1 ? c.y : c.z;
 }
 
-// Pack a dense grid of SH probes (cell-ordered: idx = ix + iy*nx + iz*nx*ny) into the
-// padded 3D atlas. `sh.length` must equal nx*ny*nz.
+// Pack a dense grid of SH probes (cell-ordered: idx = ix + iy*nx + iz*nx*ny) into the padded
+// 3D atlas. `sh.length` must equal nx*ny*nz.
 export function packProbeAtlas(sh: THREE.SphericalHarmonics3[], nx: number, ny: number, nz: number): ProbeAtlas {
     if (sh.length !== nx * ny * nz) {
         throw new Error(`packProbeAtlas: got ${sh.length} probes, expected ${nx * ny * nz} (${nx}x${ny}x${nz})`);
@@ -124,9 +113,9 @@ export function packProbeAtlas(sh: THREE.SphericalHarmonics3[], nx: number, ny: 
                 }
             }
         }
-        // Padding slices: copy the nearest edge data slice (iz 0 and iz nz-1) so the
-        // trilinear filter reads a flat value at the boundary instead of bleeding.
-        copySlice(data, texel, nx, ny, base + PADDING + 0, base); // leading  = copy of iz 0
+        // Padding slices: copy the nearest edge data slice so trilinear filtering reads a flat
+        // value at the boundary instead of bleeding.
+        copySlice(data, texel, nx, ny, base + PADDING + 0, base); // leading = copy of iz 0
         copySlice(data, texel, nx, ny, base + PADDING + (nz - 1), base + PADDING + nz); // trailing = copy of iz nz-1
     }
 
@@ -153,10 +142,9 @@ function copySlice(
     }
 }
 
-// Wrap a packed atlas in a Data3DTexture bound as the `probesSH` sampler3D uniform by
-// createProbeVolumeMaterial. FloatType + LinearFilter gives hardware trilinear interpolation
-// between probes; linear filtering of a float 3D texture needs OES_texture_float_linear
-// (standard on desktop WebGL2).
+// Wrap a packed atlas in a Data3DTexture (the `probesSH` sampler3D uniform). FloatType +
+// LinearFilter gives hardware trilinear interpolation between probes; needs
+// OES_texture_float_linear (standard on desktop WebGL2).
 export function buildProbeAtlasTexture(atlas: ProbeAtlas): THREE.Data3DTexture {
     const paddedSlices = atlas.nz + 2 * PADDING;
     const depth = SUBVOLUMES * paddedSlices;
@@ -173,8 +161,8 @@ export function buildProbeAtlasTexture(atlas: ProbeAtlas): THREE.Data3DTexture {
     return tex;
 }
 
-// The world-space position of grid cell (ix,iy,iz), matching where the bake captured it
-// and how the volume shader maps world position -> texel (min -> max spans res-1 steps).
+// World-space position of grid cell (ix,iy,iz), matching where the bake captured it and how the
+// volume shader maps world position -> texel (min -> max spans res-1 steps).
 export function cellPosition(
     box: THREE.Box3,
     res: THREE.Vector3,
@@ -187,9 +175,8 @@ export function cellPosition(
     return target.set(t(box.min.x, box.max.x, ix, res.x), t(box.min.y, box.max.y, iy, res.y), t(box.min.z, box.max.z, iz, res.z));
 }
 
-// Inverse of packProbeAtlas: read the 9 SH coefficients for every DATA cell back out of a
-// loaded atlas (padding slices skipped). Used by the debug gizmos to shade a sphere per
-// cell - and, because it's the exact inverse, it doubles as a pack/unpack roundtrip check.
+// Inverse of packProbeAtlas: read the 9 SH coefficients per data cell out of a loaded atlas
+// (padding slices skipped). Used by the debug gizmos, and doubles as a roundtrip check.
 export function unpackProbeGrid(loaded: LoadedProbeGrid): { positions: THREE.Vector3[]; sh: THREE.SphericalHarmonics3[] } {
     const nx = loaded.resolution.x;
     const ny = loaded.resolution.y;
@@ -225,16 +212,15 @@ export function unpackProbeGrid(loaded: LoadedProbeGrid): { positions: THREE.Vec
     return { positions, sh };
 }
 
-// The committed artifact: header (grid geometry + bake metadata + debris seed points) plus the
-// base64-encoded float atlas. One JSON file - bake once, commit, load at runtime. The fetch /
-// file write is the CALLER's job; these two functions are pure string <-> data.
+// The committed artifact: header (grid geometry + bake metadata) plus the base64-encoded float
+// atlas. One JSON file, baked once. These two functions are pure string <-> data; the caller
+// handles fetch/write.
 export type ProbeGridFile = {
     version: 2;
     resolution: [number, number, number]; // nx, ny, nz
     boundingBox: { min: [number, number, number]; max: [number, number, number] };
     intensity: number; // baked into the atlas SH; recorded for reference/rebake
     saturation: number; // baked into the atlas SH; recorded for reference/rebake
-    seedPositions: [number, number, number][]; // open spots near geometry, for debris scatter
     atlas: string; // base64 of the Float32Array
 };
 
@@ -242,7 +228,6 @@ export type LoadedProbeGrid = {
     texture: THREE.Data3DTexture;
     boundingBox: THREE.Box3;
     resolution: THREE.Vector3;
-    seedPositions: THREE.Vector3[];
 };
 
 function floatsToBase64(data: Float32Array): string {
@@ -265,7 +250,7 @@ function base64ToFloats(b64: string): Float32Array {
 export function serializeProbeGridFile(
     atlas: ProbeAtlas,
     box: THREE.Box3,
-    meta: { intensity: number; saturation: number; seedPositions: THREE.Vector3[] },
+    meta: { intensity: number; saturation: number },
 ): string {
     const file: ProbeGridFile = {
         version: 2,
@@ -273,7 +258,6 @@ export function serializeProbeGridFile(
         boundingBox: { min: box.min.toArray() as [number, number, number], max: box.max.toArray() as [number, number, number] },
         intensity: meta.intensity,
         saturation: meta.saturation,
-        seedPositions: meta.seedPositions.map((p) => p.toArray() as [number, number, number]),
         atlas: floatsToBase64(atlas.data),
     };
     return JSON.stringify(file);
@@ -290,7 +274,6 @@ export function deserializeProbeGridFile(text: string): LoadedProbeGrid {
             new THREE.Vector3().fromArray(file.boundingBox.max),
         ),
         resolution: new THREE.Vector3(nx, ny, nz),
-        seedPositions: file.seedPositions.map((p) => new THREE.Vector3().fromArray(p)),
     };
 }
 
@@ -298,35 +281,28 @@ export function deserializeProbeGridFile(text: string): LoadedProbeGrid {
 // RUNTIME - the probe-volume material (self-contained shader, no three grid feature).
 // ============================================================================
 //
-// We inject our own copy of the SH sampling shader via onBeforeCompile rather than depend on
-// three core's USE_LIGHT_PROBES_GRID path, so the CONSUMER of the format sits right next to
-// packProbeAtlas above. The GLSL is vendored (adapted) from three r185's
-// src/renderers/shaders/ShaderChunk/lightprobes_pars_fragment.glsl.js - keep it in lockstep
-// with SUBVOLUME_LANES; unpackProbeGrid's roundtrip is the canary.
+// Injects our own SH sampling shader via onBeforeCompile instead of three's
+// USE_LIGHT_PROBES_GRID path. GLSL vendored from three r185's
+// lightprobes_pars_fragment.glsl.js; keep in lockstep with SUBVOLUME_LANES.
 
 // Shared across every volume material: one atlas texture + one box, uploaded once. Each
-// material's onBeforeCompile points its uniforms at these same objects, so setProbeVolume
-// updates them all at once with no per-material bookkeeping.
+// material's uniforms point at these objects, so setProbeVolume updates them all at once.
 const uniforms = {
     probesSH: { value: null as THREE.Data3DTexture | null },
     probesMin: { value: new THREE.Vector3() },
     probesMax: { value: new THREE.Vector3() },
     probesResolution: { value: new THREE.Vector3() },
-    // Runtime brightness multiply on the sampled irradiance, ON TOP OF the intensity already
-    // baked into the atlas SH at bake time. 1 = the baked look; raise/lower to retune live
-    // without a re-bake. Shared across every volume material, so setProbeVolumeIntensity moves
-    // them all at once. (For a permanent change, fold it into PROBE_INTENSITY and re-bake.)
+    // Runtime brightness multiply on top of the intensity baked into the atlas SH. 1 = baked
+    // look; retune live without a re-bake. Shared across every volume material.
     probesIntensity: { value: 1 },
-    // On/off gate for the whole volume contribution (0 = off), multiplied into the irradiance
-    // add alongside probesIntensity. A debug toggle (debug.ts "probe lighting") flips this to
-    // compare the companions with vs. without the baked GI — no recompile, just a uniform.
+    // On/off gate for the whole volume contribution (0 = off). Debug toggle, no recompile.
     probesEnabled: { value: 1 },
 };
 
 let volumeReady = false;
 
 // Point the shared uniforms at a loaded grid. Call before creating volume materials so the
-// sampler3D is bound by first compile.
+// sampler3D is bound by the first compile.
 export function setProbeVolume(loaded: LoadedProbeGrid): void {
     uniforms.probesSH.value = loaded.texture;
     uniforms.probesMin.value.copy(loaded.boundingBox.min);
@@ -339,23 +315,20 @@ export function isProbeVolumeReady(): boolean {
     return volumeReady;
 }
 
-// Live brightness multiply on the volume irradiance (default 1 = the baked intensity). Applied
-// on top of the atlas's baked-in PROBE_INTENSITY, so this retunes companion lighting without a
-// re-bake. Affects every volume material at once (shared uniform).
+// Live brightness multiply on the volume irradiance (default 1 = baked intensity), on top of the
+// atlas's baked-in intensity. Affects every volume material at once.
 export function setProbeVolumeIntensity(intensity: number): void {
     uniforms.probesIntensity.value = intensity;
 }
 
 // On/off gate for the whole volume contribution (default on). Zeroes the sampled irradiance for
-// every volume material at once via a shared uniform — no recompile — so the debug panel can
-// compare the companions/cats with vs. without the baked GI.
+// every volume material at once, no recompile, for the debug panel.
 export function setProbeVolumeEnabled(enabled: boolean): void {
     uniforms.probesEnabled.value = enabled ? 1 : 0;
 }
 
 // Declarations + the vendored sampler. Injected after <lights_pars_begin>. Requires WebGL2
-// (sampler3D / texture(vec3) is GLSL ES 3.0, which every MeshStandardMaterial compiles to
-// under three's WebGL2 renderer).
+// (sampler3D / texture(vec3) is GLSL ES 3.0).
 const PARS_GLSL = /* glsl */ `
 uniform highp sampler3D probesSH;
 uniform vec3 probesMin;
@@ -423,11 +396,9 @@ vec3 getProbeVolumeIrradiance( vec3 worldPos, vec3 worldNormal ) {
 }
 `;
 
-// Injected after <lights_fragment_begin>, where three has just defined geometryPosition
-// (= -vViewPosition, view space) and geometryNormal (view space). We reconstruct the
-// world-space position/normal (inverse-view; the normal transform is transformNormalBy-
-// InverseViewMatrix inlined so we don't lean on a core helper) and add the volume's
-// irradiance exactly where three adds a global light probe's.
+// Injected after <lights_fragment_begin>, where geometryPosition/geometryNormal are view-space.
+// Reconstructs world-space position/normal (inverse-view, transform inlined) and adds the
+// volume's irradiance where three adds a global light probe's.
 const IRRADIANCE_ADD = /* glsl */ `
 {
     vec3 probeWorldPos = ( ( vec4( geometryPosition, 1.0 ) - viewMatrix[ 3 ] ) * viewMatrix ).xyz;
@@ -436,11 +407,9 @@ const IRRADIANCE_ADD = /* glsl */ `
 }
 `;
 
-// Inject the probe-volume sampling into an EXISTING MeshStandardMaterial (e.g. a textured,
-// skinned character material) so it picks up the volume's irradiance exactly like a fresh
-// white box does — the volume adds on top of whatever fill lights the material already sees.
-// All injected sources are identical, so instances that share defines also share one compiled
-// program; only the uniform VALUES differ, and those are the shared module-level ones anyway.
+// Inject probe-volume sampling into an existing MeshStandardMaterial so it picks up the volume's
+// irradiance on top of whatever fill lights it already sees. Injected sources are identical, so
+// instances that share defines share one compiled program.
 export function applyProbeVolume(material: THREE.MeshStandardMaterial): void {
     material.onBeforeCompile = (shader) => {
         shader.uniforms.probesSH = uniforms.probesSH;
@@ -455,7 +424,7 @@ export function applyProbeVolume(material: THREE.MeshStandardMaterial): void {
     };
 }
 
-// A white MeshStandardMaterial that samples the shared probe volume — the debris/box case.
+// A white MeshStandardMaterial that samples the shared probe volume - the debris/box case.
 export function createProbeVolumeMaterial(): THREE.MeshStandardMaterial {
     const material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0.0 });
     applyProbeVolume(material);
@@ -468,17 +437,15 @@ export function createProbeVolumeMaterial(): THREE.MeshStandardMaterial {
 
 const GIZMO_SIZE = 0.06; // radius (m) of each probe helper sphere
 
-// Visualize a baked probe VOLUME: one THREE.LightProbeHelper per grid cell - a small sphere
-// shaded by that cell's actual SH (unpacked straight from the atlas we ship, so what you see
-// is exactly what the volume shader samples). Warm near the boiler, cool/dark in the corners;
-// a pure-black sphere means that cell captured nothing (buried in geometry or a truly unlit
-// spot). The backing LightProbes are NOT added to the scene, so they light nothing - the
-// helpers only draw them. Toggled by the debug panel's "light probes" box.
+// Visualize a baked probe volume: one LightProbeHelper per grid cell, a small sphere shaded by
+// that cell's actual SH (unpacked from the shipped atlas, so it matches what the shader samples).
+// A pure-black sphere means the cell captured nothing. The backing LightProbes are not added to
+// the scene; the helpers only draw them. Toggled by the debug panel.
 export function buildProbeGizmos(loaded: LoadedProbeGrid): THREE.Group {
     const group = new THREE.Group();
     const { positions, sh } = unpackProbeGrid(loaded);
     for (let i = 0; i < positions.length; i++) {
-        const probe = new THREE.LightProbe(); // detached (not added to scene -> lights nothing)
+        const probe = new THREE.LightProbe(); // detached, lights nothing
         probe.sh.copy(sh[i]);
         probe.position.copy(positions[i]);
         group.add(new LightProbeHelper(probe, GIZMO_SIZE));
@@ -495,7 +462,7 @@ export type BakeOptions = {
     resolution?: number; // per-face render size (px); 128 is plenty for order-2 SH
     near?: number;
     far?: number;
-    saturation?: number; // chroma boost to bake into every probe (1 = raw); see saturateSphericalHarmonics
+    saturation?: number; // chroma boost baked into every probe (1 = raw)
     flipY?: boolean; // flip captured faces vertically (GL readback is bottom-up)
     settleFrames?: number; // frames waited per face for Spark's sort/instances to catch up (default 2)
     onProgress?: (done: number, total: number) => void;
@@ -525,9 +492,8 @@ function facesToCubeTexture(faces: Uint8Array[], size: number, flipY: boolean): 
     return tex;
 }
 
-// The six cube-map faces, in three's CubeTexture order (px, nx, py, ny, pz, nz):
-// look direction + camera up, matching three's CubeCamera so fromCubeTexture reads
-// them in the right orientation.
+// The six cube-map faces in three's CubeTexture order (px, nx, py, ny, pz, nz): look direction +
+// camera up, matching three's CubeCamera so fromCubeTexture reads them right-side-up.
 const CUBE_FACES: { look: [number, number, number]; up: [number, number, number] }[] = [
     { look: [1, 0, 0], up: [0, -1, 0] }, // +X
     { look: [-1, 0, 0], up: [0, -1, 0] }, // -X
@@ -537,18 +503,15 @@ const CUBE_FACES: { look: [number, number, number]; up: [number, number, number]
     { look: [0, 0, -1], up: [0, -1, 0] }, // -Z
 ];
 
-// Yield to the event loop for one animation frame. Spark prepares splat instances
-// and runs its depth sort in a worker whose result lands on a LATER tick - so we
-// MUST let real frames pass between renders, or nothing is drawn yet and the readback
-// comes back black. (A tight synchronous render loop never lets that work complete.)
+// Yield to the event loop for one animation frame. Spark's splat sort runs in a worker whose
+// result lands on a later tick, so we must let real frames pass between renders or the readback
+// comes back black.
 const nextFrame = (): Promise<void> => new Promise((r) => requestAnimationFrame(() => r()));
 
-// Capture the six cube faces at `center` by rendering each as its own 90 deg view to the CANVAS
-// (renderer.render with target=null) - the ONLY path that reliably makes Spark draw all six
-// faces. spark.renderCubeMap renders into an offscreen cube target and comes back black / only
-// partly filled here (its per-face render-target juggling clobbers Spark's compositing), so we
-// stick with the canvas + gl.readPixels approach. `settleFrames` = frames waited after pointing
-// the camera so Spark's worker sort/instances catch up before readback.
+// Capture the six cube faces at `center` by rendering each as its own 90 deg view to the canvas
+// (target=null) - the only path that reliably makes Spark draw all six faces. spark.renderCubeMap
+// into an offscreen cube target comes back black/partial here. `settleFrames` = frames waited
+// after pointing the camera so Spark's worker catches up before readback.
 async function captureCubeFaces(
     renderer: THREE.WebGLRenderer,
     scene: THREE.Scene,
@@ -570,8 +533,7 @@ async function captureCubeFaces(
         cam.lookAt(target);
         cam.updateMatrixWorld(true);
         renderer.setRenderTarget(null); // canvas
-        // Render, then let real frames pass so Spark's worker sort + instance upload
-        // for this viewpoint completes; render once more and read the finished frame.
+        // Let real frames pass so Spark's worker sort completes, then render once more and read.
         for (let s = 0; s < settleFrames; s++) {
             renderer.render(scene, cam);
             await nextFrame();
@@ -585,8 +547,8 @@ async function captureCubeFaces(
 }
 
 // Capture an SH probe at each position: six per-face renders -> CubeTexture -> order-2 SH
-// projection. Returns the coefficients in the SAME order as `positions` (the caller relies on
-// that to pack the atlas). Assumes the splat is already fully resident (bake loads it nonLod).
+// projection. Returns coefficients in the same order as `positions`. Assumes the splat is
+// already fully resident (bake loads it nonLod).
 export async function bakeProbeGrid(
     renderer: THREE.WebGLRenderer,
     scene: THREE.Scene,
@@ -605,8 +567,7 @@ export async function bakeProbeGrid(
         const faces = await captureCubeFaces(renderer, scene, positions[i], near, far, size, settleFrames);
         const cube = facesToCubeTexture(faces, size, flipY);
         const probeSh = LightProbeGenerator.fromCubeTexture(cube).sh;
-        // Bake the chroma boost straight into the SH so the shipped atlas (and the debug
-        // spheres) already carry it - the runtime then does no per-frame work.
+        // Bake the chroma boost into the SH so the shipped atlas carries it; no runtime work.
         saturateSphericalHarmonics(probeSh, saturation);
         sh.push(probeSh);
         cube.dispose();
@@ -616,8 +577,8 @@ export async function bakeProbeGrid(
     return sh;
 }
 
-// Capture the six faces at a point and return the flat RGBA buffers + their side length -
-// used by the bake's diagnostic (a raw six-face env-capture strip).
+// Capture the six faces at a point and return the flat RGBA buffers + side length - used by the
+// bake's diagnostic (a raw six-face env-capture strip).
 export async function captureCubeFacesAt(
     renderer: THREE.WebGLRenderer,
     scene: THREE.Scene,
@@ -631,16 +592,14 @@ export async function captureCubeFacesAt(
     return { faces, size };
 }
 
-// Rec.709 luma weights - a colour's perceived brightness, the axis saturation pivots around.
+// Rec.709 luma weights - perceived brightness, the axis saturation pivots around.
 const LUMA = { x: 0.2126, y: 0.7152, z: 0.0722 };
 const ZERO = new THREE.Vector3(0, 0, 0);
 
-// Push an SH probe's colours away from grey. A diffuse irradiance probe integrates the whole
-// hemisphere, so localized coloured light averages toward grey. Boosting saturation amplifies
-// whatever chroma the probe *did* capture so it reads on the lit meshes. Exact on SH: the
-// saturation map is linear in RGB, so applying it per-coefficient equals applying it to the
-// final evaluated irradiance. saturation = 1 is a no-op; > 1 boosts. Baked into every probe
-// offline (bakeProbeGrid), so the shipped atlas carries it and the runtime does no work.
+// Push an SH probe's colours away from grey: hemisphere integration averages localized coloured
+// light toward grey, so this amplifies whatever chroma the probe did capture. The saturation map
+// is linear in RGB, so per-coefficient equals per-final-irradiance. saturation = 1 is a no-op;
+// > 1 boosts. Baked in offline, so the runtime does no work.
 export function saturateSphericalHarmonics(sh: THREE.SphericalHarmonics3, saturation: number): void {
     if (saturation === 1) return;
     const coeffs = sh.coefficients;
@@ -650,17 +609,15 @@ export function saturateSphericalHarmonics(sh: THREE.SphericalHarmonics3, satura
         c.y = lum + (c.y - lum) * saturation;
         c.z = lum + (c.z - lum) * saturation;
     }
-    // Keep the average (DC) irradiance non-negative - a strong boost on a channel far
-    // below the luminance could otherwise push it slightly negative (unphysical).
+    // Keep the average (DC) irradiance non-negative; a strong boost could otherwise push a
+    // channel slightly negative (unphysical).
     coeffs[0].max(ZERO);
 }
 
-// A DENSE regular grid for the probe-volume texture: a fixed resolution per axis and positions
-// emitted in the exact cell order packProbeAtlas expects (idx = ix + iy*nx + iz*nx*ny, ix
-// fastest). Pins an integer resolution and returns the EFFECTIVE box (min -> min + (n-1)*spacing)
-// so the runtime shader's probesMin/probesMax line up precisely with where we captured. No
-// culling - every cell is baked (a volume can't ship holes; a void cell just captures dark),
-// which is the point of moving to a volume.
+// A dense regular grid for the probe-volume texture: fixed resolution per axis, positions in the
+// cell order packProbeAtlas expects (idx = ix + iy*nx + iz*nx*ny, ix fastest). Returns the
+// effective box (min -> min + (n-1)*spacing) so the shader's probesMin/probesMax line up with the
+// capture. No culling - every cell is baked (a void cell just captures dark).
 export type DenseLattice = { positions: THREE.Vector3[]; nx: number; ny: number; nz: number; box: THREE.Box3 };
 
 export function buildDenseLattice(min: THREE.Vector3, max: THREE.Vector3, spacing: number): DenseLattice {
@@ -678,181 +635,4 @@ export function buildDenseLattice(min: THREE.Vector3, max: THREE.Vector3, spacin
         }
     }
     return { positions, nx, ny, nz, box: new THREE.Box3(min.clone(), effMax) };
-}
-
-// A coarse cubic-voxel occupancy grid over the splat centers. Each cell stores how many splat
-// centers fall in it, so we can answer "how far is the nearest splat to this point?"
-// (nearestSplatDistance) without an O(probes x splats) brute scan. Built once at bake time from
-// the flat [x,y,z, x,y,z, ...] center buffer.
-export type SplatGrid = {
-    cell: number;
-    min: THREE.Vector3; // world position of voxel (0,0,0)'s min corner
-    nx: number;
-    ny: number;
-    nz: number;
-    counts: Uint32Array; // length nx*ny*nz, row-major (x outer, z inner)
-};
-
-// Bin `count` splat centers (flat xyz triples in `centers`) into a voxel grid spanning
-// [min, max]. Centers outside the box are clamped to the edge voxels - we only use this
-// for a coarse proximity test near the probe box, so out-of-box floaters don't matter.
-export function buildSplatGrid(
-    centers: Float32Array,
-    count: number,
-    min: THREE.Vector3,
-    max: THREE.Vector3,
-    cell: number,
-): SplatGrid {
-    const nx = Math.max(1, Math.ceil((max.x - min.x) / cell) + 1);
-    const ny = Math.max(1, Math.ceil((max.y - min.y) / cell) + 1);
-    const nz = Math.max(1, Math.ceil((max.z - min.z) / cell) + 1);
-    const counts = new Uint32Array(nx * ny * nz);
-    const clamp = (v: number, hi: number) => (v < 0 ? 0 : v > hi ? hi : v);
-    for (let i = 0; i < count; i++) {
-        const gx = clamp(Math.floor((centers[i * 3] - min.x) / cell), nx - 1);
-        const gy = clamp(Math.floor((centers[i * 3 + 1] - min.y) / cell), ny - 1);
-        const gz = clamp(Math.floor((centers[i * 3 + 2] - min.z) / cell), nz - 1);
-        counts[(gx * ny + gy) * nz + gz]++;
-    }
-    return { cell, min: min.clone(), nx, ny, nz, counts };
-}
-
-// Robust probe-box bounds from local splat OCCUPANCY rather than a per-axis percentile.
-// Returns the box around every voxel of `grid` holding at least `minCount` splats. Unlike a
-// percentile trim, this is per-VOXEL, so it can reject sparse floaters on every axis AND
-// keep sparsely-sampled-but-real geometry on a lopsided axis at the same time - a single
-// per-axis percentile knife can't do both (it over-includes floaters on the dense side while
-// cutting real geometry on the sparse side). Pass a coarse full-extent grid (bounds need no
-// detail). Falls back to the grid's full span if nothing clears the threshold.
-export function occupancyBounds(grid: SplatGrid, minCount: number): THREE.Box3 {
-    const { cell, min, nx, ny, nz, counts } = grid;
-    const bmin = new THREE.Vector3(Infinity, Infinity, Infinity);
-    const bmax = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
-    for (let gx = 0; gx < nx; gx++) {
-        for (let gy = 0; gy < ny; gy++) {
-            for (let gz = 0; gz < nz; gz++) {
-                if (counts[(gx * ny + gy) * nz + gz] < minCount) continue;
-                // Grow the box to this voxel's outer corners (min corner + one cell).
-                bmin.min(_bv.set(min.x + gx * cell, min.y + gy * cell, min.z + gz * cell));
-                bmax.max(_bv.addScalar(cell));
-            }
-        }
-    }
-    // Nothing cleared the threshold (minCount too high) - fall back to the grid's full span
-    // so the bake still produces a grid instead of an empty box.
-    if (bmin.x > bmax.x) {
-        bmin.copy(min);
-        bmax.set(min.x + nx * cell, min.y + ny * cell, min.z + nz * cell);
-    }
-    return new THREE.Box3(bmin, bmax);
-}
-const _bv = new THREE.Vector3(); // scratch for occupancyBounds
-
-// Distance (m) from (x,y,z) to the nearest occupied voxel's center, searching voxel shells
-// outward from the query point and stopping once no closer cell can exist. Quantized to ~cell
-// resolution - enough for a keep/drop band decision. Returns Infinity if nothing is occupied
-// within `maxDist`.
-export function nearestSplatDistance(grid: SplatGrid, x: number, y: number, z: number, maxDist: number): number {
-    const { cell, min, nx, ny, nz, counts } = grid;
-    const gx = Math.floor((x - min.x) / cell);
-    const gy = Math.floor((y - min.y) / cell);
-    const gz = Math.floor((z - min.z) / cell);
-    const maxR = Math.ceil(maxDist / cell) + 1;
-    let best2 = Infinity;
-    for (let r = 0; r <= maxR; r++) {
-        // Every unsearched cell is at least (r-1)*cell away, so once that exceeds the
-        // best distance found, no closer splat remains - stop expanding.
-        if (best2 < Infinity && (r - 1) * cell > Math.sqrt(best2)) break;
-        for (let dx = -r; dx <= r; dx++) {
-            const cx = gx + dx;
-            if (cx < 0 || cx >= nx) continue;
-            const ax = Math.abs(dx);
-            for (let dy = -r; dy <= r; dy++) {
-                const cy = gy + dy;
-                if (cy < 0 || cy >= ny) continue;
-                const ay = Math.abs(dy);
-                // Only visit the shell surface at Chebyshev radius r (cells already
-                // covered by a smaller r were handled on an earlier iteration).
-                const edgeXY = ax === r || ay === r;
-                for (let dz = -r; dz <= r; dz++) {
-                    if (!edgeXY && Math.abs(dz) !== r) continue;
-                    const cz = gz + dz;
-                    if (cz < 0 || cz >= nz) continue;
-                    if (counts[(cx * ny + cy) * nz + cz] === 0) continue;
-                    const px = min.x + (cx + 0.5) * cell;
-                    const py = min.y + (cy + 0.5) * cell;
-                    const pz = min.z + (cz + 0.5) * cell;
-                    const d2 = (px - x) ** 2 + (py - y) ** 2 + (pz - z) ** 2;
-                    if (d2 < best2) best2 = d2;
-                }
-            }
-        }
-    }
-    return best2 === Infinity ? Infinity : Math.sqrt(best2);
-}
-
-// Fraction (0..1) of the voxels within `radius` of (x,y,z) that contain at least one splat - a
-// NORMALIZED local density, independent of absolute splat counts and scene scale. This is the
-// key difference from nearestSplatDistance: a lone floater within range barely moves it (1
-// occupied voxel out of a few hundred), whereas a real surface nearby fills a whole slab of
-// voxels and pushes it up. So it distinguishes "next to substantial geometry" (keep) from
-// "next to a stray speck / in open void" (drop) - which a nearest-splat test cannot.
-export function localSplatDensity(grid: SplatGrid, x: number, y: number, z: number, radius: number): number {
-    const { cell, min, nx, ny, nz, counts } = grid;
-    const gx = Math.floor((x - min.x) / cell);
-    const gy = Math.floor((y - min.y) / cell);
-    const gz = Math.floor((z - min.z) / cell);
-    const rV = Math.ceil(radius / cell);
-    const r2 = radius * radius;
-    let total = 0;
-    let occupied = 0;
-    for (let dx = -rV; dx <= rV; dx++) {
-        const cx = gx + dx;
-        const wx = (dx + 0.5) * cell - (x - (min.x + gx * cell)); // probe->voxel-center x offset
-        for (let dy = -rV; dy <= rV; dy++) {
-            const cy = gy + dy;
-            const wy = (dy + 0.5) * cell - (y - (min.y + gy * cell));
-            for (let dz = -rV; dz <= rV; dz++) {
-                const wz = (dz + 0.5) * cell - (z - (min.z + gz * cell));
-                if (wx * wx + wy * wy + wz * wz > r2) continue; // sphere, not box
-                const cz = gz + dz;
-                total++;
-                if (cx < 0 || cx >= nx || cy < 0 || cy >= ny || cz < 0 || cz >= nz) continue;
-                if (counts[(cx * ny + cy) * nz + cz] > 0) occupied++;
-            }
-        }
-    }
-    return total === 0 ? 0 : occupied / total;
-}
-
-export type SplatProximityFilter = {
-    minClearance: number; // drop probes with nearest splat closer than this (jammed in a surface); 0 = off
-    densityRadius: number; // radius (m) the local density is measured over
-    minDensity: number; // drop probes whose local occupied-voxel fraction is below this
-};
-
-// Keep only lattice points that sit near real, substantial geometry: enough splat DENSITY
-// nearby (not a sparse/floater region), and not jammed inside a surface. In the volume bake
-// this NO LONGER gates lighting (every cell is baked) - it only picks where debris spawns.
-// Returns the survivors plus per-probe nearest-distance and density (for logging).
-export function filterProbesBySplatProximity(
-    positions: THREE.Vector3[],
-    grid: SplatGrid,
-    { minClearance, densityRadius, minDensity }: SplatProximityFilter,
-): { kept: THREE.Vector3[]; distances: number[]; densities: number[] } {
-    const kept: THREE.Vector3[] = [];
-    const distances: number[] = [];
-    const densities: number[] = [];
-    for (const p of positions) {
-        const density = localSplatDensity(grid, p.x, p.y, p.z, densityRadius);
-        if (density < minDensity) continue; // sparse region / open void - no local geometry to light from
-        // Only search as far as the clearance we care about; Infinity (nothing that
-        // close) passes. Skip the search entirely when the near cull is disabled.
-        const d = minClearance > 0 ? nearestSplatDistance(grid, p.x, p.y, p.z, minClearance) : Infinity;
-        if (d < minClearance) continue; // jammed against / inside a surface - captures black
-        kept.push(p);
-        distances.push(d);
-        densities.push(density);
-    }
-    return { kept, distances, densities };
 }

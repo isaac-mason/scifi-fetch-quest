@@ -1,7 +1,6 @@
-// A tiny lowercase-monospace readout just right of the crosshair, shown when you look at
-// something interactable: its name, and a "‹click› <verb>" hint that appears once you're in
-// range (verb = "talk" for a companion/cat, "take" for a pickup). Sits in a small dark card
-// matching the rest of the HUD. Fixed to screen centre (the view ray only hits what you're aimed at).
+// A small lowercase-monospace readout right of the crosshair when you look at something
+// interactable: its name, plus a click-verb hint that appears once you're in range (verb =
+// "talk" for a companion/cat, "take" for a pickup). Fixed to screen centre.
 
 // What the nameplate is pointing at: a display name + the interact-prompt verb.
 export type NameTarget = { name: string; verb: string };
@@ -58,12 +57,12 @@ export function createNameplate(): Nameplate {
 }
 
 // Per-frame: show `target`'s name right of the crosshair (or hide when null). `canInteract`
-// reveals the "‹click› <verb>" hint — only once the player is within interact range.
+// reveals the click-verb hint - only once the player is within interact range.
 export function updateNameplate(np: Nameplate, target: NameTarget | null, canInteract: boolean): void {
     if (!target) {
         if (np.shown) {
-            // Only drop np-show so the WHOLE card (name + prompt) fades out together via opacity.
-            // Removing np-interact here would display:none the prompt instantly — fading unevenly.
+            // Drop only np-show so the whole card (name + prompt) fades out together via opacity;
+            // removing np-interact here would display:none the prompt instantly (uneven fade).
             // np-interact is re-set from canInteract on the next show, so leaving it is harmless.
             np.root.classList.remove('np-show');
             np.shown = false;

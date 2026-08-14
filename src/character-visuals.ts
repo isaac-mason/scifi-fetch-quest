@@ -7,11 +7,9 @@ import type { Character } from './characters';
 import { applyProbeVolume, isProbeVolumeReady } from './light-probes';
 import { CAT_HEIGHT, CAT_URL } from './scene';
 
-// The shared skinned BODY for every NPC — crew and cats alike. It owns all the three.js: it
-// loads one template per model (CHARACTER_MODELS), and per character id creates/updates/removes an
-// animated instance. It reads the data-only Character (characters.ts): the character's grounded
-// `position`, `facing`, `speed`, and one-shot `emote` request. Behaviour (follow / wander /
-// finale) lives entirely in characters.ts — this module just draws whatever the data says.
+// Draws every NPC (crew + cats). Owns all three.js: loads a template per model and per character id
+// creates/updates/removes an animated instance from the data-only Character (characters.ts).
+// Behaviour lives in characters.ts; this module just renders what the data says.
 
 const BASE = import.meta.env.BASE_URL;
 
@@ -22,10 +20,9 @@ export const TARGET_HEIGHT = 1;
 const FACING_OFFSET = 0;
 const TURN_RATE = 8; // yaw damping toward the character's facing
 const BLEND_RATE = 8; // idle<->walk crossfade speed
-const EMOTE_BLEND = 0.35; // seconds to fade a one-shot (emote / hop flair) in at the start + out at the end
+const EMOTE_BLEND = 0.35; // seconds to fade a one-shot in/out
 
-// Per-model gait tuning: crew stride reads fast, cats amble slowly, so the walk<->idle thresholds
-// and the "natural" clip speed differ. Bundled on the model spec so createInstance can copy it.
+// Per-model gait tuning: walk<->idle thresholds and natural clip speed differ per model.
 export type GaitConfig = {
     enter: number; // m/s: rise above this to switch Idle -> Walk
     exit: number; // m/s: fall below this to switch Walk -> Idle (hysteresis)
@@ -34,18 +31,17 @@ export type GaitConfig = {
     clipMax: number; // clamp on the walk timeScale (fastest)
 };
 
-// One entry per loadable model. `fitHeight` scales the (oversized) authored model to a world
-// height; `gait` tunes the locomotion crossfade. (Foot grounding is measured, not nudged.)
+// One entry per loadable model. `fitHeight` scales the authored model to a world height; `gait`
+// tunes the locomotion crossfade.
 export type ModelSpec = { name: string; url: string; fitHeight: number; gait: GaitConfig };
 
-// Crew stride reads fast at their ~3.4 m/s follow speed; cats amble at ~0.55 m/s, so their walk
-// clip must engage far sooner and play back quicker relative to speed.
+// Crew stride reads fast at ~3.4 m/s follow; cats amble at ~0.55 m/s, so their walk clip engages
+// sooner and plays back quicker relative to speed.
 const CREW_GAIT: GaitConfig = { enter: 0.4, exit: 0.1, clipSpeed: 1.4, clipMin: 0.4, clipMax: 1.6 };
 const CAT_GAIT: GaitConfig = { enter: 0.1, exit: 0.05, clipSpeed: 0.5, clipMin: 1.0, clipMax: 2.2 };
 
-// The model registry: the four crew (fit to TARGET_HEIGHT) + the cat (fit to CAT_HEIGHT, with the
-// scene's foot nudge). loadCharacterVisuals loads a template per entry; a Character's `model` field
-// names which one it draws. Spelled out one entry per model — dumb and greppable.
+// Model registry: four crew (fit to TARGET_HEIGHT) + the cat (fit to CAT_HEIGHT). loadCharacterVisuals
+// loads a template per entry; a Character's `model` field names which one it draws.
 export const CHARACTER_MODELS: ModelSpec[] = [
     { name: 'George', url: `${BASE}characters/George.glb`, fitHeight: TARGET_HEIGHT, gait: CREW_GAIT },
     { name: 'Leela', url: `${BASE}characters/Leela.glb`, fitHeight: TARGET_HEIGHT, gait: CREW_GAIT },
@@ -72,15 +68,14 @@ type View = {
     walkWeight: number; // 0 = idle, 1 = walking (smoothed)
     walking: boolean; // latched gait state (hysteresis)
     yaw: number; // current rendered yaw, damped toward the character's facing
-    // A single one-shot overlay slot, shared by crew emotes AND the cat's mid-air hop flair —
-    // both are "play this clip once over the whole body, then blend back to locomotion".
+    // One-shot overlay slot, shared by crew emotes and the cat's hop flair: play once over the
+    // whole body, then blend back to locomotion.
     oneshot: THREE.AnimationAction | null;
     oneshotWeight: number; // 0 = locomotion, 1 = one-shot (smoothed crossfade)
     oneshotTime: number; // seconds left of the current one-shot before it blends back
 };
 
-// The visualization system: owns all three.js for the NPCs. Reads the data-only Character[]
-// (characters.ts) and creates/updates/removes one animated model per character id.
+// Owns all three.js for the NPCs; creates/updates/removes one animated model per character id.
 export type CharacterVisuals = {
     scene: THREE.Scene;
     templates: Map<string, Template>;
@@ -91,13 +86,11 @@ export function initCharacterVisuals(scene: THREE.Scene): CharacterVisuals {
     return { scene, templates: new Map(), views: new Map() };
 }
 
-// Load every model template (crew + cat) and precompute each one's fit scale + foot offset. Await
-// before spawning characters. A model whose GLTF fails to load is simply skipped (its characters
-// then never get a view — createView no-ops).
+// Load every model template and precompute its fit scale + foot offset. Await before spawning
+// characters. A model whose GLTF fails to load is skipped (its characters never get a view).
 export async function loadCharacterVisuals(visuals: CharacterVisuals): Promise<void> {
     const loader = new GLTFLoader();
-    // The optimized crew .glb use EXT_meshopt_compression; the decoder is harmless for models
-    // (e.g. the cat) that don't. WebP textures decode natively in the loader.
+    // Crew .glb use EXT_meshopt_compression; the decoder is harmless for models that don't.
     loader.setMeshoptDecoder(MeshoptDecoder);
     await Promise.all(
         CHARACTER_MODELS.map(async (spec) => {
@@ -107,7 +100,7 @@ export async function loadCharacterVisuals(visuals: CharacterVisuals): Promise<v
                     o.frustumCulled = false; // skinned bounds are unreliable -> avoid cull flicker
                     const mesh = o as THREE.Mesh;
                     if (mesh.isMesh) {
-                        mesh.castShadow = true; // NPCs cast (and receive each other's) shadows
+                        mesh.castShadow = true; // NPCs cast + receive each other's shadows
                         mesh.receiveShadow = true;
                     }
                 });
@@ -126,10 +119,9 @@ const measureHeight = (obj: THREE.Object3D): number => {
     return box.max.y - box.min.y;
 };
 
-// Grounding offset: measure the model's lowest vertex in the ACTUAL Idle pose so the feet land on
-// the floor. Two things matter: (1) pose the skeleton to Idle first (a bind-pose box doesn't match
-// how it's rendered → floating), and (2) setFromObject(..., true) applies bone transforms per
-// vertex, so the box reflects the skinned pose. Returns the lift that puts min.y at 0.
+// Grounding offset: measure the lowest vertex in the actual Idle pose so the feet land on the floor.
+// Poses the skeleton to Idle first (bind-pose box would float), and setFromObject(..., true) applies
+// bone transforms per vertex so the box reflects the skinned pose. Returns the lift that puts min.y at 0.
 function measureFootOffset(scene: THREE.Object3D, clips: THREE.AnimationClip[], fit: number): number {
     const probe = cloneSkinned(scene);
     probe.scale.setScalar(fit);
@@ -152,14 +144,12 @@ function createView(visuals: CharacterVisuals, ch: Character): View | null {
     const root = cloneSkinned(tmpl.scene);
     root.scale.setScalar(tmpl.fit);
 
-    // Light every NPC from the baked probe VOLUME (light-probes.ts): SkeletonUtils.clone shares
-    // materials, so clone them and inject the volume sampler into each. The shader adds the SH
-    // irradiance sampled at each FRAGMENT's world position on top of the fill lights. Uniforms are
-    // shared globally (setProbeVolume), so there's no per-instance or per-frame CPU work.
+    // Light every NPC from the baked probe volume (light-probes.ts). SkeletonUtils.clone shares
+    // materials, so clone them and inject the volume sampler; the shader adds per-fragment SH
+    // irradiance on top of the fill lights. Uniforms are shared globally, so no per-frame CPU work.
     const inject = (m: THREE.Material): THREE.Material => {
         const c = m.clone();
-        // Only inject if a probe grid actually loaded — otherwise the shader would sample an
-        // unbound sampler3D. No grid → the NPC keeps the flat fill lights.
+        // Only inject if a probe grid loaded, else the shader would sample an unbound sampler3D.
         if ((c as THREE.MeshStandardMaterial).isMeshStandardMaterial && isProbeVolumeReady()) {
             applyProbeVolume(c as THREE.MeshStandardMaterial);
         }
@@ -179,8 +169,7 @@ function createView(visuals: CharacterVisuals, ch: Character): View | null {
     const walkClip = findClip(tmpl.clips, 'Walk');
     const idle = idleClip ? mixer.clipAction(idleClip) : null;
     const walk = walkClip ? mixer.clipAction(walkClip) : null;
-    // Both play; a random phase keeps a group out of lock-step. Start idle and let the first
-    // updates blend to walk once the agent moves.
+    // Both play; a random phase keeps a group out of lock-step. Start idle, blend to walk on move.
     if (idle && idleClip) {
         idle.play();
         idle.time = Math.random() * idleClip.duration;
@@ -208,10 +197,9 @@ function createView(visuals: CharacterVisuals, ch: Character): View | null {
     };
 }
 
-// Per-frame: sync meshes to character data — spawn views for new ids, place/orient/animate
-// existing ones, drop views whose character is gone. `visible` (debug "characters" toggle) hides
-// every model without tearing the views down, so animation/state keep running and they reappear
-// intact when re-enabled.
+// Per-frame: sync meshes to character data - spawn views for new ids, place/orient/animate existing
+// ones, drop views whose character is gone. `visible` (debug toggle) hides models without tearing
+// views down, so animation/state keep running and they reappear intact when re-enabled.
 export function updateCharacterVisuals(visuals: CharacterVisuals, characters: Character[], dt: number, visible = true): void {
     const alive = new Set<string>();
 
@@ -226,20 +214,17 @@ export function updateCharacterVisuals(visuals: CharacterVisuals, characters: Ch
         }
 
         view.root.visible = visible;
-        // The character's position is already the grounded feet point (characters.ts snaps it to
-        // the collider); yOffset lifts the model origin so its feet sit exactly there.
+        // ch.position is the grounded feet point; yOffset lifts the model origin so its feet sit there.
         view.root.position.set(ch.position[0], ch.position[1] + view.yOffset, ch.position[2]);
 
-        // Damp rendered yaw toward the character's facing along the shortest arc so heading changes
-        // turn gracefully instead of snapping.
+        // Damp rendered yaw toward facing along the shortest arc so heading changes don't snap.
         const targetYaw = ch.facing + FACING_OFFSET;
         const delta = Math.atan2(Math.sin(targetYaw - view.yaw), Math.cos(targetYaw - view.yaw));
         view.yaw += delta * Math.min(1, TURN_RATE * dt);
         view.root.rotation.y = view.yaw;
 
-        // One-shot overlay: consume a request (a crew emote, or the cat's 'Fall' hop flair), play
-        // it once, then crossfade back to locomotion. Fades IN over EMOTE_BLEND at the start and
-        // OUT over EMOTE_BLEND at the end (overlapping the clip's tail so the return is smooth).
+        // One-shot overlay: consume a request (crew emote or the cat's 'Fall' hop), play it once,
+        // then crossfade back to locomotion. Fades in/out over EMOTE_BLEND at each end.
         if (ch.emote) {
             const tmpl = visuals.templates.get(ch.model);
             const clip = tmpl ? findClip(tmpl.clips, ch.emote) : null;
@@ -256,9 +241,8 @@ export function updateCharacterVisuals(visuals: CharacterVisuals, characters: Ch
             ch.emote = null; // consumed
         }
         if (view.oneshotTime > 0) view.oneshotTime -= dt;
-        // Full weight while playing, then fade out over the last EMOTE_BLEND seconds. Move the
-        // weight at a CONSTANT rate (linear envelope) so the crossfade is even — an exponential
-        // lerp front-loads the change and reads as a snap.
+        // Full weight while playing, then fade out over the last EMOTE_BLEND seconds. Linear envelope
+        // (constant rate) keeps the crossfade even; an exponential lerp would front-load and snap.
         const oneshotTarget = view.oneshotTime > EMOTE_BLEND ? 1 : 0;
         const step = dt / EMOTE_BLEND;
         view.oneshotWeight =

@@ -1,5 +1,5 @@
-// A row of keyboard/mouse control hints along the bottom-centre — desktop only. Same mono /
-// translucent aesthetic as the rest of the HUD; shown during free play, hidden in dialogue/cutscenes.
+// A row of keyboard/mouse control hints, desktop only. Shown during free play, hidden in
+// dialogue/cutscenes.
 
 const CSS = `
 #ctrl-hint {

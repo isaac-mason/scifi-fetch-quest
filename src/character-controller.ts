@@ -1,5 +1,6 @@
 import { capsule, type Filter, filter, type KCC, kcc, transformed } from 'crashcat';
 import { quat, type Vec3, vec3, vec4 } from 'mathcat';
+import type { Input } from './input';
 import { OBJECT_LAYER_GHOST, OBJECT_LAYER_MOVING, type Physics } from './physics';
 import { CHARACTER_SPAWN, GRAVITY } from './scene';
 
@@ -25,15 +26,14 @@ export type Character = {
     filter: Filter;
     updateSettings: kcc.UpdateSettings;
     listener: kcc.CharacterListener;
-    /** True only on frames the player is actively steering (has a wish-direction).
-     *  Gates the contact-solve velocity-kill below, so we only slide on intentional
-     *  input and stand dead-still otherwise. */
+    /** True only on frames the player is actively steering (has a wish-direction). Gates the
+     *  contact-solve velocity-kill below, so we slide only on intentional input. */
     allowSliding: boolean;
 };
 
 export function initCharacter(physics: Physics): Character {
-    // Offset the shape so the capsule sits ABOVE the character position (= feet):
-    // the capsule centre is half the full height up.
+    // Offset the shape so the capsule sits above the character position (feet): its centre is
+    // half the full height up.
     const shapeOffset = vec3.fromValues(0, CHARACTER_HEIGHT / 2, 0);
     const shape = transformed.create({
         shape: capsule.create({ halfHeightOfCylinder: HALF_HEIGHT_OF_CYLINDER, radius: CHARACTER_RADIUS }),
@@ -44,8 +44,8 @@ export function initCharacter(physics: Physics): Character {
     const character = kcc.create(
         {
             shape,
-            // Inner kinematic body so raycasts/sensors can see the character. It
-            // doesn't drive movement — the KCC's own sweeps do.
+            // Inner kinematic body so raycasts/sensors can see the character. It doesn't drive
+            // movement - the KCC's own sweeps do.
             innerRigidBody: { shape, objectLayer: OBJECT_LAYER_MOVING },
             up: vec3.fromValues(0, 1, 0),
             maxSlopeAngle: MAX_SLOPE_ANGLE,
@@ -64,12 +64,10 @@ export function initCharacter(physics: Physics): Character {
 
     const updateSettings = kcc.createDefaultUpdateSettings();
 
-    // The player's movement filter starts with every layer enabled. Drop the GHOST object layer
-    // so our capsule sweeps ignore the character (crew + cat) raycast sensor capsules (all on
-    // GHOST): otherwise the crew/cats can physically wedge us in a hallway. They stay hittable by the
-    // interaction view ray, which uses its own all-layers filter (see view-ray.ts). GHOST shares
-    // the MOVING broadphase with OBJECT_LAYER_MOVING, so disabling it here leaves the broadphase
-    // (and level collision) intact.
+    // Drop the GHOST object layer from the player's filter so our sweeps ignore the crew/cat sensor
+    // capsules (all on GHOST); otherwise they'd wedge us in a hallway. They stay hittable by the
+    // interaction view ray (its own all-layers filter, see view-ray.ts). GHOST shares the MOVING
+    // broadphase, so disabling it here leaves the broadphase and level collision intact.
     const playerFilter = filter.create(physics.world.settings.layers);
     filter.disableObjectLayer(playerFilter, physics.world.settings.layers, OBJECT_LAYER_GHOST);
 
@@ -81,12 +79,10 @@ export function initCharacter(physics: Physics): Character {
         listener: {},
     };
 
-    // When the player isn't steering (no wish-dir), kill any velocity the KCC's
-    // penetration recovery generates against a resting, not-too-steep contact. Without
-    // this the character keeps a tiny residual velocity from the uneven collider each
-    // frame — it reads as jittering / drifting while standing still. Mirrors the
-    // crashcat KCC example's onContactSolve. We only clamp when `allowSliding` is false,
-    // so intentional movement (and sliding down steep slopes) is untouched.
+    // When the player isn't steering, kill any velocity penetration recovery generates against a
+    // resting, not-too-steep contact; otherwise the uneven collider leaves a residual velocity that
+    // reads as jitter/drift while standing still. Mirrors the crashcat KCC example. Clamps only when
+    // allowSliding is false, so intentional movement and steep-slope sliding are untouched.
     c.listener.onContactSolve = (
         _character,
         _body,
@@ -117,10 +113,8 @@ const _vertical = vec3.create();
 const _horizontal = vec3.create();
 const _newVel = vec3.create();
 
-/**
- * Quake-style ground friction: bleed off horizontal speed, with extra bite below
- * STOP_SPEED so you come to a clean stop. Operates in place on `vel`.
- */
+/** Quake-style ground friction: bleed off horizontal speed, with extra bite below STOP_SPEED for a
+ *  clean stop. Operates in place on `vel`. */
 function applyFriction(vel: Vec3, dt: number): void {
     const speed = vec3.length(vel);
     if (speed < 1e-4) {
@@ -132,12 +126,9 @@ function applyFriction(vel: Vec3, dt: number): void {
     vec3.scale(vel, vel, newSpeed / speed);
 }
 
-/**
- * Quake-style acceleration: only adds speed along `wishDir` up to `wishSpeed`.
- * Because it clamps the *projected* speed (not total), aiming wishDir across your
- * velocity while airborne lets total speed climb — that's the air-strafe / bhop
- * trick. Operates in place on `vel`.
- */
+/** Quake-style acceleration: only adds speed along `wishDir` up to `wishSpeed`. Clamps the projected
+ *  speed (not total), so aiming across your velocity while airborne lets total speed climb - the
+ *  air-strafe/bhop trick. Operates in place on `vel`. */
 function accelerate(vel: Vec3, wishDir: Vec3, wishSpeed: number, accel: number, dt: number): void {
     const currentSpeed = vec3.dot(vel, wishDir);
     const addSpeed = wishSpeed - currentSpeed;
@@ -146,65 +137,62 @@ function accelerate(vel: Vec3, wishDir: Vec3, wishSpeed: number, accel: number, 
     vec3.scaleAndAdd(vel, vel, wishDir, accelSpeed);
 }
 
-/**
- * Advance the character one step, Quake-style. `moveDir` is a world-space
- * horizontal wish-direction (y≈0, any magnitude — normalized here); `jump`
- * requests a jump this frame (hold it to bunny-hop); `sprint` raises the ground
- * target speed (Shift).
- */
-export function updateCharacter(physics: Physics, c: Character, moveDir: Vec3, jump: boolean, sprint: boolean, dt: number): void {
-    const character = c.kcc;
-
+/** Advance the character one step, Quake-style. `moveDir` is a world-space horizontal wish-direction
+ *  (y~0, any magnitude - normalized here); `input` supplies jump (hold to bunny-hop) + sprint intent.
+ *  `moveDir` is derived from input + camera yaw by the caller, so this stays camera-agnostic. */
+export function updateCharacterController(physics: Physics, character: Character, moveDir: Vec3, input: Input, dt: number): void {
+    const { jump, sprint } = input;
+    // moveDir carries the analog stick tilt. Split into a unit direction + a 0..1 speed scale so a
+    // partial tilt walks slowly. Keyboard is always full-tilt (clamped to 1), so this is a no-op there.
     const moveLen = vec3.length(moveDir);
+    const speedScale = Math.min(moveLen, 1);
     if (moveLen > 1e-6) vec3.scale(moveDir, moveDir, 1 / moveLen);
     else vec3.zero(moveDir);
 
-    // Only permit contact sliding when the player is actively steering — see the
-    // onContactSolve listener in initCharacter. A jump also counts as intent so we
-    // don't clamp the launch velocity.
-    c.allowSliding = moveLen > 1e-6 || jump;
+    // Only permit contact sliding when actively steering (see onContactSolve in initCharacter);
+    // a jump also counts as intent so we don't clamp the launch velocity.
+    character.allowSliding = moveLen > 1e-6 || jump;
 
-    // Account for moving platforms under the character (vertical follow + ground vel).
-    kcc.updateGroundVelocity(physics.world, character, c.listener);
+    // account for moving platforms under the character (vertical follow + ground vel).
+    kcc.updateGroundVelocity(physics.world, character.kcc, character.listener);
 
-    // Split current velocity into vertical (along up) and horizontal components.
-    vec3.copy(_up, character.up);
-    vec3.copy(_lin, character.linearVelocity);
+    // split current velocity into vertical (along up) and horizontal components.
+    vec3.copy(_up, character.kcc.up);
+    vec3.copy(_lin, character.kcc.linearVelocity);
     const verticalSpeed = vec3.dot(_lin, _up);
     vec3.scale(_vertical, _up, verticalSpeed);
     vec3.sub(_horizontal, _lin, _vertical);
 
-    // Grounded only if we're also settling toward the floor (not launching off it).
-    const groundVerticalSpeed = vec3.dot(character.ground.velocity, _up);
+    // grounded only if we're also settling toward the floor (not launching off it).
+    const groundVerticalSpeed = vec3.dot(character.kcc.ground.velocity, _up);
     const movingTowardsGround = verticalSpeed - groundVerticalSpeed < 0.1;
-    const onGround = character.ground.state === kcc.GroundState.ON_GROUND && movingTowardsGround;
+    const onGround = character.kcc.ground.state === kcc.GroundState.ON_GROUND && movingTowardsGround;
     const willJump = onGround && jump;
 
-    // --- Horizontal: friction (ground, unless jumping) + directional accel ---
+    // --- horizontal: friction (ground, unless jumping) + directional accel ---
     if (onGround) {
         if (!willJump) applyFriction(_horizontal, dt);
-        const groundSpeed = sprint ? MAX_SPEED * SPRINT_MULTIPLIER : MAX_SPEED;
+        const groundSpeed = (sprint ? MAX_SPEED * SPRINT_MULTIPLIER : MAX_SPEED) * speedScale;
         accelerate(_horizontal, moveDir, groundSpeed, GROUND_ACCEL, dt);
     } else {
-        // Capped wish-speed in the air is what makes air-strafing gain speed.
+        // capped wish-speed in the air is what makes air-strafing gain speed.
         accelerate(_horizontal, moveDir, Math.min(MAX_SPEED, AIR_SPEED_CAP), AIR_ACCEL, dt);
     }
 
-    // --- Vertical: ground stick / jump, then gravity ---
+    // --- vertical: ground stick / jump, then gravity ---
     let newVerticalSpeed = onGround ? groundVerticalSpeed : verticalSpeed;
     if (willJump) newVerticalSpeed += JUMP_SPEED;
     newVerticalSpeed += vec3.dot(GRAVITY, _up) * dt;
 
-    // Recombine horizontal + vertical and hand the velocity to the controller.
+    // recombine horizontal + vertical and hand the velocity to the controller.
     vec3.scale(_vertical, _up, newVerticalSpeed);
     vec3.add(_newVel, _horizontal, _vertical);
-    vec3.copy(character.linearVelocity, _newVel);
+    vec3.copy(character.kcc.linearVelocity, _newVel);
 
-    // Stair step-up, plus floor-stick — but not on the jump frame, or we'd snap
-    // straight back down and never leave the ground.
-    vec3.scale(c.updateSettings.walkStairsStepUp, character.up, 0.4);
-    if (willJump) vec3.zero(c.updateSettings.stickToFloorStepDown);
-    else vec3.scale(c.updateSettings.stickToFloorStepDown, character.up, -0.5);
+    // Stair step-up plus floor-stick - but not on the jump frame, or we'd snap straight back down.
+    vec3.scale(character.updateSettings.walkStairsStepUp, character.kcc.up, 0.4);
+    if (willJump) vec3.zero(character.updateSettings.stickToFloorStepDown);
+    else vec3.scale(character.updateSettings.stickToFloorStepDown, character.kcc.up, -0.5);
 
-    kcc.update(physics.world, character, dt, GRAVITY, c.updateSettings, c.listener, c.filter);
+    kcc.update(physics.world, character.kcc, dt, GRAVITY, character.updateSettings, character.listener, character.filter);
 }

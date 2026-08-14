@@ -16,14 +16,14 @@ const _origin: [number, number, number] = [0, 0, 0];
 const _direction: [number, number, number] = [0, 0, 0];
 const _forward = new THREE.Vector3();
 
-// Built lazily (needs the world's layers). All layers enabled — walls occlude, so the
-// CLOSEST hit is what matters — minus the player's own body so we don't self-interact.
+// All layers enabled (walls occlude, so the closest hit is what matters), minus the player's own
+// body so we don't self-interact.
 const viewFilter = filter.create(worldSettings.layers);
 
 /**
- * Cast a ray straight out of the camera and return the id of the closest rigid body it hits
- * (or null if it hits nothing within `maxDistance`). Walls occlude, so this is genuine line of
- * sight. The caller resolves the body to a character (physics.bodyToCharacter).
+ * Cast a ray out of the camera and return the closest rigid body it hits (or null within
+ * `maxDistance`). Walls occlude, so this is genuine line of sight. The caller resolves the body
+ * to a character (physics.bodyToCharacter).
  */
 export function castViewRay(physics: Physics, camera: THREE.Camera, maxDistance: number): BodyId | null {
     viewFilter.bodyFilter = (body) => body.id !== physics.playerBodyId;
