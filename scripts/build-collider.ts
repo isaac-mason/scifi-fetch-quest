@@ -3,8 +3,9 @@
  *
  * Reads the collider .glb, extracts just world-space positions + triangle
  * indices via gltf-transform (dropping normals/uvs/materials/etc.), and packs
- * them into public/collider.bin using the shared packcat schema. The browser
- * reads the same .bin back with unpackCollider() in src/index.ts.
+ * them into public/collider.bin using the shared packcat schema (collider-schema.ts).
+ * The navmesh build (scripts/build-navmesh.ts) reads the .bin back with unpackCollider().
+ * (The runtime loads the collider .glb directly — see src/collider-load.ts — not this .bin.)
  *
  * Usage:
  *   pnpm build:collider [input.glb] [output.bin]

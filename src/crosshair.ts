@@ -8,6 +8,7 @@ export function createCrosshair(): Crosshair {
     // Small white circle, dead centre, with a soft dark outline so it reads on both
     // bright and dark splats.
     const dot = document.createElement('div');
+    dot.className = 'hud'; // debug "hud" toggle hides everything with this class at once
     dot.style.cssText = [
         'position:fixed',
         'left:50%',

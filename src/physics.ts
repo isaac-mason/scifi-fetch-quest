@@ -11,7 +11,6 @@ import {
     createWorld,
     createWorldSettings,
     enableCollision,
-    type Filter,
     filter,
     MotionType,
     registerAll,
@@ -25,40 +24,30 @@ import { quat, type Vec3 } from 'mathcat';
 import type { Collider } from './collider-schema';
 import { FLOOR_HALF_EXTENTS, FLOOR_Y, GRAVITY } from './scene';
 
-// Register all shapes & constraints up front. Simplest during development; swap
-// for granular registerShapes/registerConstraints later for better tree-shaking.
 registerAll();
 
-const settings = createWorldSettings();
+export const worldSettings = createWorldSettings();
 
-// Earth gravity (shared with the character controller, see scene.ts).
-settings.gravity = GRAVITY;
+worldSettings.gravity = GRAVITY;
 
-export const BROADPHASE_LAYER_MOVING = addBroadphaseLayer(settings);
-export const BROADPHASE_LAYER_NOT_MOVING = addBroadphaseLayer(settings);
+export const BROADPHASE_LAYER_MOVING = addBroadphaseLayer(worldSettings);
+export const BROADPHASE_LAYER_NOT_MOVING = addBroadphaseLayer(worldSettings);
 
-export const OBJECT_LAYER_MOVING = addObjectLayer(settings, BROADPHASE_LAYER_MOVING);
-export const OBJECT_LAYER_NOT_MOVING = addObjectLayer(settings, BROADPHASE_LAYER_NOT_MOVING);
-export const OBJECT_LAYER_GHOST = addObjectLayer(settings, BROADPHASE_LAYER_MOVING);
+export const OBJECT_LAYER_MOVING = addObjectLayer(worldSettings, BROADPHASE_LAYER_MOVING);
+export const OBJECT_LAYER_NOT_MOVING = addObjectLayer(worldSettings, BROADPHASE_LAYER_NOT_MOVING);
+export const OBJECT_LAYER_GHOST = addObjectLayer(worldSettings, BROADPHASE_LAYER_MOVING);
 
-enableCollision(settings, OBJECT_LAYER_MOVING, OBJECT_LAYER_NOT_MOVING);
-enableCollision(settings, OBJECT_LAYER_MOVING, OBJECT_LAYER_MOVING);
+enableCollision(worldSettings, OBJECT_LAYER_MOVING, OBJECT_LAYER_NOT_MOVING);
+enableCollision(worldSettings, OBJECT_LAYER_MOVING, OBJECT_LAYER_MOVING);
 
 export type Physics = {
     world: World;
-    /** Maps a rigid-body id → the character id it represents (set on add). Used by the
-     *  view ray (see view-ray.ts) to resolve a hit body back to a character. */
     bodyToCharacter: Map<BodyId, string>;
-    /** Maps a rigid-body id → an interactable id (world pickups / the cat). Same idea as
-     *  bodyToCharacter, but for non-character look-and-click objects (see interactables.ts). */
-    bodyToInteractable: Map<BodyId, string>;
-    /** The player's own inner rigid body — excluded from the view ray so we don't
-     *  "interact" with ourselves. Set by initCharacter once the KCC exists. */
     playerBodyId: BodyId | null;
 };
 
 export function initPhysics(): Physics {
-    const world = createWorld(settings);
+    const world = createWorld(worldSettings);
 
     rigidBody.create(world, {
         shape: box.create({ halfExtents: FLOOR_HALF_EXTENTS }),
@@ -67,7 +56,7 @@ export function initPhysics(): Physics {
         objectLayer: OBJECT_LAYER_NOT_MOVING,
     });
 
-    return { world, bodyToCharacter: new Map(), bodyToInteractable: new Map(), playerBodyId: null };
+    return { world, bodyToCharacter: new Map(), playerBodyId: null };
 }
 
 // Clamp the frame delta so a long pause (e.g. tab refocus) can't blow up the sim.
@@ -132,43 +121,23 @@ export function moveCharacterCollider(physics: Physics, bodyId: BodyId, feet: Ve
     if (body) rigidBody.setPosition(physics.world, body, feet, true);
 }
 
-// Add a non-colliding capsule (GHOST layer) at `base` purely as a view-ray target for an
-// interactable — a world pickup or the cat. Records the body→interactable mapping. Mirrors
-// addCharacterCollider (kinematic so the raycast reliably hits it), but it never moves.
-export function addInteractableBody(
-    physics: Physics,
-    interactableId: string,
-    base: Vec3,
-    radius: number,
-    height: number,
-): BodyId {
-    const halfHeightOfCylinder = Math.max(0.01, height / 2 - radius);
-    const shape = transformed.create({
-        shape: capsule.create({ halfHeightOfCylinder, radius }),
-        position: [0, height / 2, 0],
-        quaternion: quat.create(),
-    });
-    const body = rigidBody.create(physics.world, {
-        shape,
-        position: [base[0], base[1], base[2]],
-        motionType: MotionType.KINEMATIC,
-        objectLayer: OBJECT_LAYER_GHOST,
-    });
-    physics.bodyToInteractable.set(body.id, interactableId);
-    return body.id;
+// Stop a character's sensor being hittable (e.g. a cat that leapt aboard and despawned). Unmaps it
+// from the view ray; the inert ghost body is left in place (cheap, never queried again).
+export function removeCharacterCollider(physics: Physics, bodyId: BodyId): void {
+    physics.bodyToCharacter.delete(bodyId);
 }
 
-// Stop an interactable being hittable (e.g. after it's collected / has left). Unmaps it; the
-// inert ghost body is left in place (cheap, never queried again).
-export function removeInteractableBody(physics: Physics, bodyId: BodyId): void {
-    physics.bodyToInteractable.delete(bodyId);
-}
+const groundFilter = filter.createEmpty();
+filter.disableAllLayers(groundFilter, worldSettings.layers);
+filter.enableObjectLayer(groundFilter, worldSettings.layers, OBJECT_LAYER_NOT_MOVING);
+groundFilter.collisionMask = -1;
+groundFilter.collisionGroups = -1;
 
-// A ray filter that hits ONLY the static level collider (NOT_MOVING) — not characters/cats
-// (GHOST) or the player (MOVING). Built lazily on first groundAt.
-let groundFilter: Filter | null = null;
-const _groundCollector = createClosestCastRayCollector();
-const _groundSettings = createDefaultCastRaySettings();
+const groundCollector = createClosestCastRayCollector();
+
+const groundSettings = createDefaultCastRaySettings();
+groundSettings.collideWithBackfaces = true;
+
 const _groundOrigin: Vec3 = [0, 0, 0];
 const _groundDir: Vec3 = [0, -1, 0];
 
@@ -176,15 +145,12 @@ const _groundDir: Vec3 = [0, -1, 0];
 // floor Y it hits (or null if nothing within `maxDist`). Used to sit creatures on the real
 // collider surface, which the navmesh only approximates.
 export function groundAt(physics: Physics, x: number, z: number, fromY: number, maxDist: number): number | null {
-    if (!groundFilter) {
-        groundFilter = filter.createEmpty();
-        filter.enableObjectLayer(groundFilter, physics.world.settings.layers, OBJECT_LAYER_NOT_MOVING);
-    }
     _groundOrigin[0] = x;
     _groundOrigin[1] = fromY;
     _groundOrigin[2] = z;
-    _groundCollector.reset();
-    castRay(physics.world, _groundCollector, _groundSettings, _groundOrigin, _groundDir, maxDist, groundFilter);
-    if (_groundCollector.hit.status !== CastRayStatus.COLLIDING) return null;
-    return fromY - _groundCollector.hit.fraction * maxDist;
+
+    groundCollector.reset();
+    castRay(physics.world, groundCollector, groundSettings, _groundOrigin, _groundDir, maxDist, groundFilter);
+    if (groundCollector.hit.status !== CastRayStatus.COLLIDING) return null;
+    return fromY - groundCollector.hit.fraction * maxDist;
 }

@@ -36,8 +36,10 @@ export function createQuestHud(): QuestHud {
 
     const objective = document.createElement('div');
     objective.id = 'qh-obj';
+    objective.className = 'hud'; // debug "hud" toggle hides it with the rest of the HUD
     const toast = document.createElement('div');
     toast.id = 'qh-toast';
+    toast.className = 'hud';
     document.body.append(objective, toast);
 
     return { objective, toast, toastTimer: 0 };

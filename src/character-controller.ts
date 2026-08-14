@@ -3,30 +3,21 @@ import { quat, type Vec3, vec3, vec4 } from 'mathcat';
 import { OBJECT_LAYER_GHOST, OBJECT_LAYER_MOVING, type Physics } from './physics';
 import { CHARACTER_SPAWN, GRAVITY } from './scene';
 
-// --- Character dimensions (metres) ---
-const CHARACTER_HEIGHT = 1.2; // full capsule height, foot to crown
+const CHARACTER_HEIGHT = 1.2;
 const CHARACTER_RADIUS = 0.2;
-// A capsule's total height is its cylinder section plus a radius hemisphere at
-// each end, so cylinder = height - 2*radius (and half of that for the shape arg).
 const HALF_HEIGHT_OF_CYLINDER = CHARACTER_HEIGHT / 2 - CHARACTER_RADIUS;
-// Headroom between the eyes and the capsule crown. When you jump into a ceiling the
-// KCC stops the crown just below it, so the eye ends up this far under the surface.
-// Keep it comfortably larger than the camera's near plane (see CAMERA_NEAR), or the
-// ceiling falls inside the near plane when you jump and gets clipped — you'd see
-// straight through the roof.
 const HEAD_CLEARANCE = 0.25;
-/** Camera height above the character's feet (its `position`) — eyes below the crown. */
+
 export const EYE_HEIGHT = CHARACTER_HEIGHT - HEAD_CLEARANCE;
 
-// --- Movement feel — Quake-style (tuned for our ~9.81 m/s² gravity, human scale) ---
-const MAX_SPEED = 3.5; // target ground speed (m/s) the accel ramps you up to
-const SPRINT_MULTIPLIER = 1.6; // scales ground target speed while sprinting (Shift)
-const JUMP_SPEED = 4.5; // upward launch velocity on jump (m/s)
-const GROUND_ACCEL = 12; // how hard you accelerate toward wish-dir on the ground
-const AIR_ACCEL = 12; // air acceleration — combined with AIR_SPEED_CAP this is what
-const AIR_SPEED_CAP = 1.0; //   lets you gain speed by air-strafing (the bhop trick)
-const FRICTION = 6; // ground friction; higher = stops quicker
-const STOP_SPEED = 1.5; // m/s — below this, friction bites harder so you fully stop
+const MAX_SPEED = 3.5;
+const SPRINT_MULTIPLIER = 1.6;
+const JUMP_SPEED = 4.5;
+const GROUND_ACCEL = 12;
+const AIR_ACCEL = 12;
+const AIR_SPEED_CAP = 1.0;
+const FRICTION = 6;
+const STOP_SPEED = 1.5;
 const MAX_SLOPE_ANGLE = (50 * Math.PI) / 180;
 
 export type Character = {
@@ -74,8 +65,8 @@ export function initCharacter(physics: Physics): Character {
     const updateSettings = kcc.createDefaultUpdateSettings();
 
     // The player's movement filter starts with every layer enabled. Drop the GHOST object layer
-    // so our capsule sweeps ignore the character + interactable raycast capsules (all on GHOST):
-    // otherwise the crew/cats can physically wedge us in a hallway. They stay hittable by the
+    // so our capsule sweeps ignore the character (crew + cat) raycast sensor capsules (all on
+    // GHOST): otherwise the crew/cats can physically wedge us in a hallway. They stay hittable by the
     // interaction view ray, which uses its own all-layers filter (see view-ray.ts). GHOST shares
     // the MOVING broadphase with OBJECT_LAYER_MOVING, so disabling it here leaves the broadphase
     // (and level collision) intact.
@@ -120,7 +111,6 @@ export function isOnGround(c: Character): boolean {
     return c.kcc.ground.state === kcc.GroundState.ON_GROUND;
 }
 
-// Scratch vectors — reused each frame to avoid per-frame allocation.
 const _up = vec3.create();
 const _lin = vec3.create();
 const _vertical = vec3.create();

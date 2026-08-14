@@ -85,7 +85,7 @@ export const CHARACTER_SPAWN: Vec3 = [-1.2, 0.19, 2.52]; // feet position the pl
 export const CHARACTER_LOOK_TARGET: Vec3 = [3.53, 1.2, 6.3]; // faces the striker
 
 // --- "Who Took the Bolts?" quest cast (see characters.ts / quest) ---
-// The four companions parked one per room as stationary NPCs (spawnQuestCast snaps each onto
+// The four companions parked one per room as stationary NPCs (spawnCrew snaps each onto
 // the navmesh). Positions are from the debug feet readout in each room; `facing` (radians) is
 // the yaw the model faces while idle — nudge in-app (backtick panel → click-copy a feet vec).
 // The accusation chain walks these in order: George → Leela → Mike → Stan.
@@ -97,7 +97,7 @@ export const QUEST_CAST: QuestAnchor[] = [
     { model: 'Stan', pos: [25.25, 1.06, -23.58], facing: 0 }, // back control room
 ];
 
-// --- "Where Are the Keys?" finale assets (see index.ts / interactables.ts) ---
+// --- "Where Are the Keys?" finale assets (see index.ts / characters.ts) ---
 // The striker + the cat sit on the outside pad. Positions are best-guesses to TUNE
 // in-app (backtick panel → click-copy a feet vec). The striker has no baked animation, so the
 // launch is a procedural tween.
@@ -115,7 +115,6 @@ export const STRIKER_BOB_FREQ = 0.16; // bob cycles/sec (slow)
 // navcat.glb on disk; the constants are named CAT_* everywhere in code.
 export const CAT_URL = `${BASE}characters/navcat.glb`;
 export const CAT_HEIGHT = 0.3; // fit each (oversized) cat model to this world height
-export const CAT_Y_NUDGE = -0.05; // extra lower/raise on top of auto foot-grounding
 export const CATS_COUNT = 10;
 export const CATS_CENTER: Vec3 = [-0.01, 0.06, 1.97]; // on interior floor (at floor height so snaps land)
 export const CATS_SPREAD = 3.6; // metres each cat wanders around the centre (wider = more scattered)

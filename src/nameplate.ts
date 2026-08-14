@@ -41,7 +41,7 @@ export function createNameplate(): Nameplate {
     document.head.appendChild(style);
 
     const root = document.createElement('div');
-    root.className = 'np-root';
+    root.className = 'np-root hud'; // `hud` = the debug "hud" toggle hides it with the rest of the HUD
     root.innerHTML = `
       <div class="np-box">
         <div class="np-name"></div>

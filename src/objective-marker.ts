@@ -45,7 +45,7 @@ export function createObjectiveMarker(): ObjectiveMarker {
     document.head.appendChild(style);
 
     const root = document.createElement('div');
-    root.className = 'obj-root';
+    root.className = 'obj-root hud'; // `hud` = the debug "hud" toggle hides it with the rest of the HUD
     root.style.display = 'none';
     root.innerHTML = `<div class="obj-tag"><span class="obj-ar"></span><span class="obj-label"></span><span class="obj-dist"></span></div>`;
     document.body.appendChild(root);

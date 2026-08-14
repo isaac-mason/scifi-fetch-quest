@@ -39,7 +39,7 @@ import { floodFillNavMesh, generateSoloNavMesh, type SoloNavMeshOptions } from '
 import { unpackCollider } from '../src/collider-schema.ts';
 
 // Accepts the packed collider (public/collider.bin, world-space positions+indices) or a
-// GLB. The .spz → collider pipeline (scripts/build-collider-spz.ts) writes the .bin.
+// GLB. scripts/build-collider.ts packs the collider .glb into the .bin.
 const INPUT = process.argv[2] ?? 'public/collider.bin';
 const OUTPUT = process.argv[3] ?? 'public/navmesh.json';
 

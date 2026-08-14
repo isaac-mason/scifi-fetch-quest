@@ -2,28 +2,9 @@ import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
 import type { Vec3 } from 'mathcat';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import {
-    allCatsGathered,
-    boardCats,
-    type Cat,
-    despawnCats,
-    hopCats,
-    initCats,
-    loadCats,
-    setCatTalking,
-    updateCats,
-} from './cats';
-import { EYE_HEIGHT, initCharacter, isOnGround, updateCharacter } from './character';
-import { initCharacterVisuals, loadCharacterVisuals, TARGET_HEIGHT, updateCharacterVisuals } from './character-visuals';
-import {
-    type Character,
-    initCharacters,
-    requestCharacterEmote,
-    setCharacterFollowing,
-    spawnQuestCast,
-    updateCharacters,
-} from './characters';
+import { EYE_HEIGHT, initCharacter, isOnGround, updateCharacter } from './character-controller';
+import { initCharacterVisuals, loadCharacterVisuals, updateCharacterVisuals } from './character-visuals';
+import { type Character, initCharacters, spawnCats, spawnCrew, updateCharacters } from './characters';
 import { loadCollider } from './collider-load';
 import type { Collider } from './collider-schema';
 import {
@@ -31,7 +12,6 @@ import {
     getMoveDirection,
     initFirstPersonControls,
     releaseFirstPersonControls,
-    setControlsPaused,
     updateFirstPersonCamera,
 } from './controls';
 import { createControlsHint, setControlsHintVisible } from './controls-hint';
@@ -44,69 +24,28 @@ import {
     updateCrowdDebug,
     updateDebugOverlay,
 } from './debug';
-import { createDialogue, isDialogueOpen, openDialogue, showLine } from './dialogue';
-import { initInteractables, interactableAt } from './interactables';
-import {
-    buildProbeGizmos,
-    deserializeProbeGridFile,
-    type LoadedProbeGrid,
-    setProbeVolume,
-    setProbeVolumeIntensity,
-} from './light-probes';
-import { createNameplate, type NameTarget, updateNameplate } from './nameplate';
-import {
-    addPlayerAgent,
-    computePath,
-    initNavigation,
-    loadNavigation,
-    updateCrowd,
-    updateNavigation,
-    updatePlayerAgent,
-} from './navigation';
-import { createObjectiveMarker, updateObjectiveMarker } from './objective-marker';
-import { createPathTrail, hidePathTrail, resamplePath, setPathTrail, updatePathTrail } from './path-trail';
+import { createDialogue, isDialogueOpen } from './dialogue';
+import { buildProbeGizmos, deserializeProbeGridFile, type LoadedProbeGrid, setProbeVolume } from './light-probes';
+import { createNameplate } from './nameplate';
+import { addPlayerAgent, initNavigation, loadNavigation, updateCrowd, updateNavigation, updatePlayerAgent } from './navigation';
+import { createObjective, updateObjective } from './objective';
 import { applyPerformance, initPerformance } from './performance';
-import { createSplatCollider, groundAt, initPhysics, updatePhysics } from './physics';
-import {
-    advance,
-    CAT_MEOW,
-    dialogueFor,
-    initQuest,
-    objective,
-    objectiveShort,
-    objectiveTarget,
-    STAGES,
-    type Stage,
-} from './quest';
+import { createSplatCollider, initPhysics, updatePhysics } from './physics';
+import { initQuest, loadStriker, objective, STAGES, skipToStage, startIntro, updateInteraction, updateStriker } from './quest';
 import { createQuestHud, setObjective } from './quest-hud';
 import {
     AMBIENT_INTENSITY,
     CAMERA_POSITION,
     CAMERA_TARGET,
-    CAT_HEIGHT,
-    CAT_URL,
-    CAT_Y_NUDGE,
-    CATS_CENTER,
-    CATS_COUNT,
-    CATS_SPREAD,
     COLLIDER_URL,
     HEMI_INTENSITY,
     MAX_DPR,
     PROBE_URL,
     SPLAT_BRIGHTNESS,
     SPLAT_URL,
-    STRIKER_BOARD_POS,
-    STRIKER_BOB_AMP,
-    STRIKER_BOB_FREQ,
-    STRIKER_EMISSIVE,
-    STRIKER_POS,
-    STRIKER_SCALE,
-    STRIKER_URL,
-    STRIKER_YAW,
 } from './scene';
-import { attachShadowCatcher, initShadows, updateShadows } from './shadows';
+import { attachShadowCatcher, initShadows, setShadowsEnabled, updateShadows } from './shadows';
 import { showTitle } from './title';
-import { castViewRay } from './view-ray';
 import './style.css';
 
 const IS_TOUCH = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
@@ -203,10 +142,9 @@ function init() {
     const crosshair = createCrosshair();
     const nameplate = createNameplate();
     const controlsHint = createControlsHint(); // desktop control indicators (bottom-centre)
-    // World-space quest marker: a pin over the current objective (NPC / ship), an edge arrow off-screen.
-    const objectiveMarker = createObjectiveMarker();
-    // Breadcrumb trail along the navcat route to the current objective.
-    const pathTrail = createPathTrail(scene);
+    // Objective guidance: the world-space marker (pin over the current target / edge arrow when
+    // off-screen) + the breadcrumb ribbon along the navcat route to it (see objective.ts).
+    const guidance = createObjective(scene);
 
     // Radial dialogue menu (dialogue.ts) + the "Where Are the Keys?" quest state/HUD. Talking to
     // an NPC opens a node on the wheel; talking to the current suspect advances the accusation.
@@ -214,10 +152,6 @@ function init() {
     const quest = initQuest();
     const questHud = createQuestHud();
     setObjective(questHud, objective(quest));
-
-    // Look-and-click world objects (the keys pickup, the cat) — created in load() once their
-    // models exist.
-    const interactables = initInteractables();
 
     window.addEventListener('resize', () => {
         camera.aspect = window.innerWidth / window.innerHeight;
@@ -243,388 +177,102 @@ function init() {
         crosshair,
         nameplate,
         controlsHint,
-        objectiveMarker,
-        pathTrail,
+        guidance,
         dialogue,
         quest,
         questHud,
-        interactables,
         fp,
         orbitActive: false, // tracks debug.orbitMode to detect mode switches
         collider: null as Collider | null,
         probe: null as LoadedProbeGrid | null,
         groundY: 0, // last grounded feet Y — the shadow floor sits here so it doesn't rise on jumps
         // Finale/scene state (filled in load()): the world point the camera lerps to look at
-        // while talking / in a scripted scene; the floating striker; and the cats.
+        // while talking / in a scripted scene; and the floating striker. The cats live in
+        // `characters` (model 'cat') alongside the crew.
         focus: null as Vec3 | null,
         striker: null as THREE.Object3D | null,
-        cats: initCats(),
         // finale fly-off state: gather (cats run under ship, wait for all) → lower (ship descends) →
         // hop (cats leap in) → ascend (fly away)
         launch: {
             active: false,
             t: 0,
             phase: 'gather' as 'gather' | 'lower' | 'hop' | 'ascend',
-            cat: null as Cat | null,
+            cat: null as Character | null,
         },
     };
 }
 
-type State = ReturnType<typeof init>;
-
-const NPC_HEAD = 0.72; // metres above a talker's feet the camera looks at (~face level; models are 1m tall)
-
-// Pause the controller and lerp the view onto a world point (setControlsPaused freezes look;
-// faceFirstPersonToward turns toward `focus` each frame in update).
-function beginFocus(state: State, focus: Vec3): void {
-    state.focus = focus;
-    updateNameplate(state.nameplate, null, false); // hide the reticle prompt while focused
-    setControlsPaused(state.fp, true);
-}
-// Hand control back after a focused interaction.
-function endFocus(state: State): void {
-    setControlsPaused(state.fp, false);
-    state.focus = null;
-}
-
-// Talk to a crowd character: open their quest node, look at them, and (for the current suspect)
-// advance the accusation + fold them into the conga line when it's done.
-function talkToCharacter(state: State, ch: Character): void {
-    const { node, active } = dialogueFor(state.quest, ch.model);
-    ch.facePlayer = true; // turn to look at us while we talk
-    beginFocus(state, [ch.position[0], ch.position[1] + NPC_HEAD, ch.position[2]]);
-    const emote = () => requestCharacterEmote(state.characters, ch.id); // gesture as each line lands
-    const done = () => {
-        ch.facePlayer = false;
-        if (active) {
-            advance(state.quest);
-            setObjective(state.questHud, objective(state.quest));
-            if (state.quest.stage !== 'closed') setCharacterFollowing(state.characters, ch.id);
-        }
-        endFocus(state);
-    };
-    // Active exchange → the response wheel; a bark → just a line you read and click past (no
-    // pointless single-option wheel).
-    if (active) openDialogue(state.dialogue, node, done, emote);
-    else showLine(state.dialogue, node.speaker, node.text, done, emote);
-}
-
-// Talk to a cat. Before the reveal it plays dumb ("meow?"); at the reveal (stage 'cat') any
-// cat gloats — they were all in on it — then the whole mob boards and the striker flies off.
-function talkToCat(state: State, cat: Cat): void {
-    const revealing = state.quest.stage === 'cat';
-    const node = revealing ? dialogueFor(state.quest, 'cat').node : CAT_MEOW;
-    setCatTalking(cat, true);
-    beginFocus(state, [cat.it.head[0], cat.it.head[1], cat.it.head[2]]);
-    openDialogue(state.dialogue, node, () => {
-        setCatTalking(cat, false);
-        if (revealing) {
-            advance(state.quest); // → closed
-            setObjective(state.questHud, objective(state.quest));
-            startLaunch(state, cat); // follow THIS cat aboard; keeps controls paused → apology scene
-        } else {
-            endFocus(state);
-        }
-    });
-}
-
-// The crew's sheepish aftermath, watched as a scripted scene (camera pans to each).
-const APOLOGY_SCENE: SceneStep[] = [
-    { focus: 'George', speaker: 'george', text: "leela… i'm sorry i said your optics were shifty. they're lovely optics." },
-    { focus: 'Leela', speaker: 'leela', text: 'it happens. mike — my bad too. you were just standing there building things.' },
-    { focus: 'Mike', speaker: 'mike', text: "we lost a spaceship to a pile of cats. let's never speak of it again." },
-    { focus: 'Stan', speaker: 'stan', text: 'for the record — my cameras performed flawlessly.' },
-];
-
-const GATHER_ARRIVE = 0.9; // a cat this close to its under-ship target counts as gathered
-const GATHER_TIMEOUT = 6.0; // safety cap: lower the ship even if a cat never makes it under
-const LOWER_DUR = 1.6; // seconds the ship takes to descend to boarding height
-const HOP_TIMEOUT = 1.2; // safety cap on the hop-in before we force-clear any stragglers
-const LAUNCH_DUR = 4.0; // seconds of the striker's climb-out
-const STRIKER_BOARD_Y = 1.0; // world y the ship lowers to so the cats can hop aboard
-
-// Kick off the finale: the cats stampede to the ground under the striker (we follow the one you
-// just talked to), the ship lowers to meet them, they hop in, then it flies off (updateLaunch).
-function startLaunch(state: State, hero: Cat): void {
-    if (!state.striker) {
-        endFocus(state);
-        return;
-    }
-    state.launch.active = true;
-    state.launch.t = 0;
-    state.launch.phase = 'gather';
-    state.launch.cat = hero;
-    boardCats(state.cats, state.navigation, STRIKER_BOARD_POS); // run to the floor under the ship
-}
-
-// Camera follows the cat you talked to (at floor level) while it's still around, else the ship.
-function focusHeroOrShip(state: State, s: THREE.Object3D): void {
-    const hero = state.launch.cat;
-    if (hero && state.cats.list.includes(hero)) {
-        const m = hero.mesh.position;
-        state.focus = [m.x, m.y + 0.35, m.z];
-    } else {
-        state.focus = [s.position.x, s.position.y, s.position.z];
-    }
-}
-
-// Per-frame finale: (1) gather — cats run to the floor under the ship while it descends to meet
-// them; (2) hop — they leap up into it and despawn; (3) ascend — it flies up and away, then the
-// crew's apology cutscene plays.
-function updateLaunch(state: State, dt: number): void {
-    const s = state.striker;
-    if (!state.launch.active || !s) return;
-    state.launch.t += dt;
-
-    if (state.launch.phase === 'gather') {
-        // Cats walk to the ground under the ship; the ship holds at its float height. Wait until
-        // they're ALL there (or a straggler times out) before lowering.
-        s.position.set(STRIKER_POS[0], STRIKER_POS[1], STRIKER_POS[2]);
-        focusHeroOrShip(state, s);
-        const allHere = state.cats.list.length === 0 || allCatsGathered(state.cats, state.navigation, GATHER_ARRIVE);
-        if (allHere || state.launch.t >= GATHER_TIMEOUT) {
-            state.launch.phase = 'lower';
-            state.launch.t = 0;
-        }
-        return;
-    }
-
-    if (state.launch.phase === 'lower') {
-        // Everyone's under it → the ship descends to boarding height to meet them.
-        const g = Math.min(1, state.launch.t / LOWER_DUR);
-        const ease = g * g * (3 - 2 * g);
-        s.position.set(STRIKER_POS[0], STRIKER_POS[1] + (STRIKER_BOARD_Y - STRIKER_POS[1]) * ease, STRIKER_POS[2]);
-        focusHeroOrShip(state, s);
-        if (g >= 1) {
-            hopCats(state.cats, [s.position.x, s.position.y, s.position.z]); // now they leap in
-            state.launch.phase = 'hop';
-            state.launch.t = 0;
-        }
-        return;
-    }
-
-    if (state.launch.phase === 'hop') {
-        // Hold the ship low while the cats arc up into it (they despawn at the end of their hop).
-        s.position.set(STRIKER_POS[0], STRIKER_BOARD_Y, STRIKER_POS[2]);
-        focusHeroOrShip(state, s);
-        if (state.cats.list.length > 0 && state.launch.t < HOP_TIMEOUT) return;
-        despawnCats(state.cats, state.navigation, state.physics, state.interactables); // clear stragglers
-        state.launch.phase = 'ascend';
-        state.launch.t = 0;
-        return;
-    }
-
-    // ascend: climb up and away from the boarding height.
-    const p = Math.min(1, state.launch.t / LAUNCH_DUR);
-    s.position.set(STRIKER_POS[0], STRIKER_BOARD_Y + p * p * 60, STRIKER_POS[2] + p * p * 34);
-    s.rotation.y = STRIKER_YAW + p * 1.5;
-    state.focus = [s.position.x, s.position.y, s.position.z]; // track it out
-    if (p >= 1) {
-        state.launch.active = false;
-        s.visible = false;
-        playScene(state, APOLOGY_SCENE); // pans the crew's apologies, then hands control back
-    }
-}
-
-// DEBUG: jump the quest to a stage (backtick panel → "skip:" buttons). Syncs the conga line —
-// a crew member follows once the quest is past their accusation — and refreshes the objective.
-function skipToStage(state: State, stage: string): void {
-    state.quest.stage = stage as Stage;
-    setObjective(state.questHud, objective(state.quest));
-    const idx = STAGES.indexOf(state.quest.stage);
-    for (const ch of state.characters.list) {
-        const chIdx = STAGES.indexOf(ch.model.toLowerCase() as Stage);
-        if (chIdx >= 0) ch.mode = chIdx < idx ? 'following' : 'stationary';
-    }
-    console.log('quest → stage:', stage);
-}
-
-// Emote the crew member a scene line is spoken by (matched by model name), if any.
-function emoteByModel(state: State, model: string): void {
-    const ch = state.characters.list.find((c) => c.model.toLowerCase() === model.toLowerCase());
-    if (ch) requestCharacterEmote(state.characters, ch.id);
-}
-
-// --- Scripted-scene runner (NPC-to-NPC exchanges you watch) ---
-// A scene is a list of lines; each names who's speaking (`speaker`, the panel label) and what to
-// look at (`focus` — a crew model, 'ship', 'cats', or '' for no change). The camera lerps to the
-// focus (faceFirstPersonToward in update), you click through the lines, then control returns.
-type SceneStep = { focus: string; speaker: string; text: string };
-
-// Resolve a scene's `focus` key to a world point to look at.
-function locate(state: State, key: string): Vec3 | null {
-    if (key === 'ship')
-        return state.striker ? [state.striker.position.x, state.striker.position.y, state.striker.position.z] : null;
-    if (key === 'cats') {
-        const c = state.cats.list[0];
-        return c ? [c.it.head[0], c.it.head[1], c.it.head[2]] : null;
-    }
-    const ch = state.characters.list.find((c) => c.model === key);
-    return ch ? [ch.position[0], ch.position[1] + NPC_HEAD, ch.position[2]] : null;
-}
-
-// Where the objective marker anchors: the top of a crew member's HEAD (feet + model height), so the
-// tag floats above them. Distinct from locate() which returns the face point for the camera focus.
-function markerAnchor(state: State, key: string): Vec3 | null {
-    if (key === 'ship')
-        return state.striker ? [state.striker.position.x, state.striker.position.y, state.striker.position.z] : null;
-    if (key === 'cats') {
-        const c = state.cats.list[0];
-        return c ? [c.it.head[0], c.it.head[1], c.it.head[2]] : null;
-    }
-    const ch = state.characters.list.find((c) => c.model === key);
-    return ch ? [ch.position[0], ch.position[1] + TARGET_HEIGHT, ch.position[2]] : null;
-}
-
-// The navmesh point to route the objective trail to (feet, not head; the pad for the ship since
-// the ship floats off-mesh).
-function objectiveGoal(state: State, key: string): Vec3 | null {
-    if (key === 'ship') return CATS_CENTER;
-    const ch = state.characters.list.find((c) => c.model === key);
-    return ch ? [ch.position[0], ch.position[1], ch.position[2]] : null;
-}
-
-// Play a scene: pause, walk the lines (camera panning to each speaker), then resume + onComplete.
-function playScene(state: State, steps: SceneStep[], onComplete?: () => void): void {
-    updateNameplate(state.nameplate, null, false);
-    setControlsPaused(state.fp, true);
-    let i = 0;
-    const next = (): void => {
-        if (i >= steps.length) {
-            endFocus(state);
-            onComplete?.();
-            return;
-        }
-        const s = steps[i++];
-        const pos = locate(state, s.focus);
-        if (pos) state.focus = pos;
-        showLine(state.dialogue, s.speaker, s.text, next, () => emoteByModel(state, s.speaker));
-    };
-    next();
-}
-
-// The opening cutscene: George shows you the (going-nowhere) ship, the useless cats, and the
-// missing-keys premise.
-const INTRO: SceneStep[] = [
-    { focus: 'George', speaker: 'george', text: 'oh, hi. you must be the new deckhand. welcome to the striker.' },
-    { focus: 'ship', speaker: 'george', text: "she's fuelled, she's polished, and she is going absolutely nowhere." },
-    { focus: 'cats', speaker: 'george', text: 'because the keys are gone. and this lot of freeloaders are no help whatsoever.' },
-    { focus: 'George', speaker: 'george', text: 'point is, we are not going anywhere. so. any bright ideas, deckhand?' },
-];
+export type State = ReturnType<typeof init>;
 
 async function load(state: State) {
-    // Wait for the splat to finish downloading/decoding before the first frame.
-    await state.splat.initialized;
+    // Kick EVERY independent asset load off at once so they download in parallel (they hit
+    // different files and don't depend on each other): the splat, the collider, the navmesh, the
+    // probe volume, the NPC models, and the striker. We then await each where its result is needed,
+    // so the sync setup runs as soon as that piece lands rather than after all of them in series.
+    const splatReady = state.splat.initialized;
+    const colliderReady = loadCollider(COLLIDER_URL);
+    const navReady = loadNavigation(state.navigation);
+    const probeReady = loadProbeVolume(state);
+    const visualsReady = loadCharacterVisuals(state.characterVisuals);
+    const strikerReady = loadStriker(state);
 
-    // Re-apply after init: the paged load can rebuild the splat's material, dropping a
-    // recolor set before `initialized`. This is the one that actually sticks.
+    // Splat: re-apply the recolor once it's wired up — the paged load can rebuild the splat's
+    // material and drop a recolor set before `initialized`. This is the one that sticks.
+    await splatReady;
     state.splat.recolor.setScalar(SPLAT_BRIGHTNESS);
 
-    state.collider = await loadCollider(COLLIDER_URL);
+    // Collider → static physics body + invisible shadow receiver (reusing the same geometry so
+    // shadows conform to the real slopes/steps) + the debug wireframe (built once; never moves).
+    state.collider = await colliderReady;
     console.log(`collider loaded: ${state.collider.positions.length / 3} verts, ${state.collider.indices.length / 3} tris`);
-
-    // Add the scene geometry to the physics world as a static triangle mesh.
     createSplatCollider(state.physics, state.collider);
-
-    // Reuse the same collider geometry as the invisible shadow receiver so the crew/cats' shadows
-    // land on the real world surface (conforming to slopes/steps). See shadows.ts.
     attachShadowCatcher(state.scene, state.collider.positions, state.collider.indices);
-
-    // Colliders never move — build the debug wireframe once, now that they exist.
     buildColliderDebug(state.debug, state.physics.world);
 
-    await loadNavigation(state.navigation);
-
-    // Load the precomputed probe VOLUME if present (baked offline: pnpm bake:probes). This
-    // must run BEFORE the companion materials compile (below) so their shaders bind the atlas
-    // texture on first compile. Without it, companions just use the flat fill lights (the
-    // material injection is gated on isProbeVolumeReady). Add one SH-shaded gizmo sphere per
-    // cell and wire it to the debug panel's "light probes" checkbox.
-    try {
-        const res = await fetch(PROBE_URL);
-        if (res.ok) {
-            const loaded = deserializeProbeGridFile(await res.text());
-            setProbeVolume(loaded);
-            // Live brightness multiply on the baked probe volume — retune companion lighting
-            // without a re-bake. Type `probeIntensity(1.5)` in the console; fold the value you
-            // like into PROBE_INTENSITY (scene.ts) + re-bake to make it permanent.
-            (window as unknown as { probeIntensity: (x: number) => void }).probeIntensity = setProbeVolumeIntensity;
-            state.probe = loaded;
-            const gizmos = buildProbeGizmos(loaded);
-            state.scene.add(gizmos);
-            attachProbeGizmos(state.debug, gizmos);
-            const r = loaded.resolution;
-            console.log(`probe volume: loaded ${r.x}×${r.y}×${r.z} grid from light-probes.json`);
-        } else {
-            console.warn('no light-probes.json — run `pnpm bake:probes` to create one');
-        }
-    } catch (err) {
-        console.warn('failed to load probe volume:', err);
-    }
-
-    // Load the companion models, then park the quest cast (George/Leela/Mike/Stan) at their
-    // room anchors as stationary NPCs.
-    await loadCharacterVisuals(state.characterVisuals);
-    spawnQuestCast(state.characters, state.navigation, state.physics);
-
-    // Represent the player in the crowd so companions avoid us like any other agent.
+    // Navmesh → spawn the cast (crew parked at their room anchors; cats loitering by the ship) plus
+    // the player's proxy agent so companions avoid us like any other agent.
+    await navReady;
+    spawnCrew(state.characters, state.navigation, state.physics);
+    spawnCats(state.characters, state.navigation, state.physics);
     const p = state.character.kcc.position;
     addPlayerAgent(state.navigation, [p[0], p[1], p[2]]);
 
-    // --- Finale props: the floating striker + the cats loitering around it ---
-    await loadFinale(state);
+    // Let the remaining background loads (probe volume, NPC models, striker) finish before the
+    // first frame so nothing pops in late — the probe in particular must be bound before the first
+    // createView so the companions' materials pick it up (see loadProbeVolume).
+    await Promise.all([probeReady, visualsReady, strikerReady]);
 
     // DEBUG: quest-stage skip buttons in the backtick panel.
     addStageSkips(state.debug, STAGES, (stage) => skipToStage(state, stage));
 }
 
-// Load the striker (floats outside) + the cat mob. Kept separate so a missing/failed asset
-// doesn't take down the rest of the scene.
-async function loadFinale(state: State): Promise<void> {
+// Load the baked probe VOLUME (pnpm bake:probes) if present: bind it as the shared irradiance
+// source, drop one SH-shaded gizmo sphere per cell into the scene (wired to the debug "light
+// probes" box), and record it for the readout. Non-fatal — without it the companions just use the
+// flat fill lights (createView gates injection on isProbeVolumeReady). Must resolve before the
+// first frame so the first createView sees the volume.
+async function loadProbeVolume(state: State): Promise<void> {
     try {
-        // The striker, floating on the outside pad (self-contained .gltf; bobs — see update).
-        const strikerGltf = await new GLTFLoader().loadAsync(STRIKER_URL);
-        const striker = strikerGltf.scene;
-        striker.position.set(STRIKER_POS[0], STRIKER_POS[1], STRIKER_POS[2]);
-        striker.scale.setScalar(STRIKER_SCALE);
-        striker.rotation.y = STRIKER_YAW;
-        // The fill lights are tuned dim (the companions rely on the baked probe volume, which the
-        // striker doesn't get), so out on the pad it reads very dark. Self-light it from its own
-        // albedo/texture via emissive so it stays readable without a dedicated light.
-        striker.traverse((o) => {
-            o.frustumCulled = false;
-            const mesh = o as THREE.Mesh;
-            const mats = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : [];
-            for (const m of mats) {
-                const std = m as THREE.MeshStandardMaterial;
-                if (!std.isMeshStandardMaterial) continue;
-                std.emissive = std.color.clone();
-                if (std.map) std.emissiveMap = std.map; // emissive follows the texture, not a flat tint
-                std.emissiveIntensity = STRIKER_EMISSIVE;
-                std.needsUpdate = true;
-            }
-        });
-        state.scene.add(striker);
-        state.striker = striker;
-
-        // The cats loitering around it — wandering the floor, playing dumb (see cats.ts).
-        await loadCats(state.cats, state.scene, state.physics, state.interactables, state.navigation, {
-            url: CAT_URL,
-            count: CATS_COUNT,
-            center: CATS_CENTER,
-            spread: CATS_SPREAD,
-            height: CAT_HEIGHT,
-            yNudge: CAT_Y_NUDGE,
-            onTalk: (cat) => talkToCat(state, cat),
-        });
+        const res = await fetch(PROBE_URL);
+        if (!res.ok) {
+            console.warn('no light-probes.json — run `pnpm bake:probes` to create one');
+            return;
+        }
+        const loaded = deserializeProbeGridFile(await res.text());
+        setProbeVolume(loaded);
+        state.probe = loaded;
+        const gizmos = buildProbeGizmos(loaded);
+        state.scene.add(gizmos);
+        attachProbeGizmos(state.debug, gizmos);
+        const r = loaded.resolution;
+        console.log(`probe volume: loaded ${r.x}×${r.y}×${r.z} grid from light-probes.json`);
     } catch (err) {
-        console.warn('finale assets failed to load (striker/cats):', err);
+        console.warn('failed to load probe volume:', err);
     }
 }
 
 const _moveDir: Vec3 = [0, 0, 0];
 const _playerPos: Vec3 = [0, 0, 0];
-const TALK_RANGE = 2; // metres — ray-hit a character/cat within this ⇒ nameplate + prompt + talkable
 
 const _orbitDir = new THREE.Vector3();
 const ORBIT_PULLBACK = 5; // metres to pull the orbit camera back off the character's head
@@ -678,11 +326,13 @@ function update(state: State, dt: number, time: number) {
     _playerPos[2] = pf[2];
 
     updateCharacters(state.characters, state.navigation, state.physics, _playerPos, dt);
-    updateCharacterVisuals(state.characterVisuals, state.characters.list, dt);
+    updateCharacterVisuals(state.characterVisuals, state.characters.list, dt, state.debug.showCharacters);
 
     // Shadows: the collider mesh is the receiver (attachShadowCatcher); here we just follow the
     // shadow frustum on the player, using the grounded feet Y so it doesn't ride up on a jump.
+    // The debug "shadows" toggle enables/disables shadow-mapping (applied to the renderer here).
     if (isOnGround(state.character)) state.groundY = pf[1];
+    setShadowsEnabled(state.shadows, state.renderer, state.debug.shadows);
     updateShadows(state.shadows, pf[0], state.groundY, pf[2]);
 
     // Crowd debug: draw a cylinder per live agent (companions + the player proxy).
@@ -694,11 +344,9 @@ function update(state: State, dt: number, time: number) {
     // samples the SH atlas per-fragment at each companion's world position — see
     // character-visuals + light-probes), so there's no per-frame CPU probe work here.
 
-    // The cats wander; the striker bobs (until the finale launch takes over its transform).
-    updateCats(state.cats, state.navigation, state.physics, state.interactables, _playerPos, dt);
-    updateLaunch(state, dt);
-    if (state.striker && !state.launch.active)
-        state.striker.position.y = STRIKER_POS[1] + Math.sin(time * STRIKER_BOB_FREQ * Math.PI * 2) * STRIKER_BOB_AMP;
+    // The cats wander as part of updateCharacters above; the striker bobs on the pad or runs the
+    // finale launch (see updateStriker in quest.ts).
+    updateStriker(state, dt, time);
 
     if (state.fp.enabled) {
         // While talking / in a scripted scene, smoothly turn the view onto the focus point.
@@ -708,33 +356,8 @@ function update(state: State, dt: number, time: number) {
         state.controls.update();
     }
 
-    // Interaction: cast a view ray out to TALK_RANGE. If it lands on a character or a cat within
-    // that range (walls occlude), you can talk to them — a single range, so there's no dead zone
-    // where the nameplate shows but you can't interact. Suppressed while a dialogue is open.
-    if (state.fp.enabled && !isDialogueOpen(state.dialogue)) {
-        const hitBody = castViewRay(state.physics, state.camera, TALK_RANGE);
-        const charId = hitBody != null ? state.physics.bodyToCharacter.get(hitBody) : undefined;
-        const hoveredChar = charId ? (state.characters.list.find((c) => c.id === charId) ?? null) : null;
-        const hoveredIt = hitBody != null ? interactableAt(state.interactables, hitBody) : null;
-
-        let target: NameTarget | null = null;
-        let action: (() => void) | null = null;
-        if (hoveredChar) {
-            target = { name: hoveredChar.model, verb: 'talk' };
-            action = () => talkToCharacter(state, hoveredChar);
-        } else if (hoveredIt) {
-            target = { name: hoveredIt.label, verb: hoveredIt.verb };
-            action = hoveredIt.onInteract;
-        }
-
-        // Hovering (a ray hit within range) IS being in range — show the prompt + allow the click.
-        updateNameplate(state.nameplate, target, target !== null);
-        const pressed = state.fp.input.interact;
-        state.fp.input.interact = false; // consume the one-shot press
-        if (pressed && action) action();
-    } else {
-        updateNameplate(state.nameplate, null, false);
-    }
+    // Interaction: aim at an NPC to talk (view-ray + nameplate prompt). See quest.updateInteraction.
+    updateInteraction(state);
     setCrosshairVisible(state.crosshair, state.fp.enabled);
     // Desktop control hints: only during free play (hidden on touch, in dialogue, and cutscenes).
     setControlsHintVisible(
@@ -742,42 +365,24 @@ function update(state: State, dt: number, time: number) {
         !IS_TOUCH && state.fp.enabled && !isDialogueOpen(state.dialogue) && !state.launch.active,
     );
 
-    // World-space objective marker — over the current suspect / the ship, an edge arrow when
-    // off-screen. Hidden while a dialogue or the launch cutscene is running.
-    const objBusy = isDialogueOpen(state.dialogue) || state.launch.active || !state.fp.enabled;
-    const objKey = objBusy ? null : objectiveTarget(state.quest);
-    const objPos = objKey ? markerAnchor(state, objKey) : null;
-    updateObjectiveMarker(state.objectiveMarker, objPos, objectiveShort(state.quest), state.camera, state.renderer);
-
-    // Objective trail: recompute the route every frame so the ribbon tracks you continuously. The
-    // chevron PLACEMENT is anchored to world space inside the trail (goal-end sampling + goal-anchored
-    // UVs + light easing), so individual chevrons hold their spots instead of jumping as the path
-    // re-solves.
-    if (!objKey) {
-        hidePathTrail(state.pathTrail);
-    } else {
-        const goal = objectiveGoal(state, objKey);
-        const feet = state.character.kcc.position;
-        // Use the GROUNDED feet Y (held steady on jumps, like the shadows) — not the live y — so the
-        // ribbon stays on the floor instead of leaping up with you when you jump.
-        const corners = goal ? computePath(state.navigation, [feet[0], state.groundY, feet[2]], goal) : null;
-        if (corners) {
-            const dots = resamplePath(corners);
-            // Ground each dot on the real collider floor. On a ray miss, DON'T fall back to the raw
-            // navmesh height (it can sit below the visible floor → the ribbon dips underground) —
-            // reuse the last good floor Y instead. Dots run player→goal, so seed from the grounded Y.
-            let lastY = state.groundY;
-            for (const d of dots) {
-                const fy = groundAt(state.physics, d[0], d[2], d[1] + 1.5, 4); // taller ray = fewer misses
-                if (fy !== null) lastY = fy;
-                d[1] = lastY;
-            }
-            setPathTrail(state.pathTrail, dots);
-        } else {
-            hidePathTrail(state.pathTrail);
-        }
-        updatePathTrail(state.pathTrail, time);
-    }
+    // World-space objective marker + the breadcrumb ribbon to it. Suppressed during dialogue, the
+    // launch cutscene, or orbit mode; the ribbon starts from the grounded player feet.
+    updateObjective(
+        state.guidance,
+        {
+            quest: state.quest,
+            navigation: state.navigation,
+            physics: state.physics,
+            characters: state.characters,
+            striker: state.striker,
+            feet: state.character.kcc.position,
+            groundY: state.groundY,
+            camera: state.camera,
+            renderer: state.renderer,
+            suppressed: isDialogueOpen(state.dialogue) || state.launch.active || !state.fp.enabled,
+        },
+        time,
+    );
 
     // Push runtime perf settings (LOD budget, …) onto the renderer.
     applyPerformance(state.perf, state.spark);
@@ -858,7 +463,7 @@ async function start() {
             titleShown = true;
             showTitle(() => {
                 if (!IS_TOUCH) state.renderer.domElement.requestPointerLock();
-                playScene(state, INTRO);
+                startIntro(state);
             });
         }
 

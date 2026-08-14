@@ -75,6 +75,16 @@ export function attachShadowCatcher(scene: THREE.Scene, positions: Float32Array,
     scene.add(mesh);
 }
 
+// Enable/disable sun shadows at runtime (debug panel "shadows" toggle). Turning the sun's
+// castShadow off changes the scene's shadow-light count, which three detects and recompiles the
+// affected materials for on the next render — so the cast shadows fully vanish (not just freeze)
+// and come back cleanly. Also flips renderer.shadowMap.enabled so the shadow pass is skipped
+// entirely while off. Safe to call every frame — a no-op when the value is unchanged.
+export function setShadowsEnabled(shadows: Shadows, renderer: THREE.WebGLRenderer, enabled: boolean): void {
+    renderer.shadowMap.enabled = enabled;
+    shadows.sun.castShadow = enabled;
+}
+
 // Re-centre the sun (and thus its shadow frustum) on the player each frame, keeping the map tight
 // and high-res near the action while the light DIRECTION stays fixed (shadows always fall the same
 // way). `y` should be the grounded feet Y so the frustum doesn't ride up on a jump.

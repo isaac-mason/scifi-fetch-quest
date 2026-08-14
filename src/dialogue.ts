@@ -12,8 +12,11 @@
 // (like nameplate/crosshair) — owns none of the quest logic, just the interaction. The caller
 // opens a node and gets the chosen index back.
 
-export type DialogueChoice = { label: string; reply: string };
-export type DialogueNode = { speaker: string; text: string; choices: DialogueChoice[] };
+export type DialogueChoice = { label: string; reply: string; emote: string };
+// `emote` — the clip the speaker plays as this line is delivered (authored per line, never random).
+// A node's `emote` punctuates its opening line; a choice's `emote` punctuates its reply. Every line
+// carries one (crew clips: Yes/No/Dance; cat clips: Spin/Idle).
+export type DialogueNode = { speaker: string; text: string; choices: DialogueChoice[]; emote: string };
 
 import { blip, charPitch, speakerPitch } from './voice';
 
@@ -100,7 +103,7 @@ export type Dialogue = {
     deadzone: number; // below this aim magnitude, nothing is highlighted
     onDone: ((choiceIndex: number) => void) | null;
     lineDone: (() => void) | null; // continue callback for a 'line' (showLine)
-    onSpeak: (() => void) | null; // fired when each line starts typing (e.g. to trigger an emote)
+    onSpeak: ((emote: string) => void) | null; // fired as each line starts typing; passes the line's authored emote
     cleanup: (() => void) | null;
     // Typewriter (animalese) state: text reveals char-by-char with a blip per char.
     typing: boolean;
@@ -165,14 +168,14 @@ export function createDialogue(): Dialogue {
 // --- Animalese typewriter: reveal `text` a character at a time, blipping per character. ---
 const TYPE_CPS = 34; // characters/second
 
-function typeText(d: Dialogue, speaker: string, text: string): void {
+function typeText(d: Dialogue, speaker: string, text: string, emote: string): void {
     clearInterval(d.typeTimer);
     d.fullText = text;
     d.typeIdx = 0;
     d.typing = true;
     d.speakerBase = speakerPitch(speaker);
     d.body.textContent = '';
-    d.onSpeak?.(); // let the caller punctuate the line (e.g. play an emote)
+    d.onSpeak?.(emote); // let the caller punctuate the line with its authored emote
     d.typeTimer = window.setInterval(() => {
         if (d.typeIdx >= text.length) {
             completeType(d);
@@ -280,7 +283,7 @@ function choose(d: Dialogue, i: number): void {
     d.wheel.classList.add('dlg-hidden');
     d.speaker.textContent = d.node.speaker ? `${d.node.speaker} ` : ''; // reply is the NPC (matters when the player spoke first)
     d.hint.textContent = IS_TOUCH ? 'tap to continue' : '‹click› continue';
-    typeText(d, d.node.speaker, d.node.choices[i].reply);
+    typeText(d, d.node.speaker, d.node.choices[i].reply, d.node.choices[i].emote);
 }
 
 // Reveal the response wheel after the player has read the NPC's line.
@@ -320,7 +323,12 @@ function finish(d: Dialogue): void {
 
 // Open a dialogue node. `onDone(choiceIndex)` fires once the player picks a response and
 // dismisses the reply. The caller should pause the controller (setControlsPaused) around this.
-export function openDialogue(d: Dialogue, node: DialogueNode, onDone: (choiceIndex: number) => void, onSpeak?: () => void): void {
+export function openDialogue(
+    d: Dialogue,
+    node: DialogueNode,
+    onDone: (choiceIndex: number) => void,
+    onSpeak?: (emote: string) => void,
+): void {
     d.node = node;
     d.onDone = onDone;
     d.onSpeak = onSpeak ?? null;
@@ -354,7 +362,7 @@ export function openDialogue(d: Dialogue, node: DialogueNode, onDone: (choiceInd
         d.speaker.textContent = node.speaker ? `${node.speaker} ` : '';
         d.hint.textContent = IS_TOUCH ? 'tap for replies' : '‹click› for replies';
         d.wheel.classList.add('dlg-hidden'); // hidden until the line's been read (reveal)
-        typeText(d, node.speaker, node.text);
+        typeText(d, node.speaker, node.text, node.emote);
     }
 
     layout(d);
@@ -365,7 +373,14 @@ export function openDialogue(d: Dialogue, node: DialogueNode, onDone: (choiceInd
 
 // Show a single line the player just reads and clicks past — no wheel, no choice. Used by the
 // scene runner for NPC-to-NPC exchanges you watch. `onContinue` fires on the click/tap/key.
-export function showLine(d: Dialogue, speaker: string, text: string, onContinue: () => void, onSpeak?: () => void): void {
+export function showLine(
+    d: Dialogue,
+    speaker: string,
+    text: string,
+    emote: string,
+    onContinue: () => void,
+    onSpeak?: (emote: string) => void,
+): void {
     d.node = null;
     d.lineDone = onContinue;
     d.onSpeak = onSpeak ?? null;
@@ -375,7 +390,7 @@ export function showLine(d: Dialogue, speaker: string, text: string, onContinue:
     d.hint.textContent = IS_TOUCH ? 'tap to continue' : '‹click› continue';
     d.wheel.classList.add('dlg-hidden');
     d.root.classList.add('dlg-open');
-    typeText(d, speaker, text);
+    typeText(d, speaker, text, emote);
     wireInputs(d);
 }
 

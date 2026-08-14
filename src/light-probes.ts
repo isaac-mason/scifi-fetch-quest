@@ -317,6 +317,10 @@ const uniforms = {
     // without a re-bake. Shared across every volume material, so setProbeVolumeIntensity moves
     // them all at once. (For a permanent change, fold it into PROBE_INTENSITY and re-bake.)
     probesIntensity: { value: 1 },
+    // On/off gate for the whole volume contribution (0 = off), multiplied into the irradiance
+    // add alongside probesIntensity. A debug toggle (debug.ts "probe lighting") flips this to
+    // compare the companions with vs. without the baked GI — no recompile, just a uniform.
+    probesEnabled: { value: 1 },
 };
 
 let volumeReady = false;
@@ -342,6 +346,13 @@ export function setProbeVolumeIntensity(intensity: number): void {
     uniforms.probesIntensity.value = intensity;
 }
 
+// On/off gate for the whole volume contribution (default on). Zeroes the sampled irradiance for
+// every volume material at once via a shared uniform — no recompile — so the debug panel can
+// compare the companions/cats with vs. without the baked GI.
+export function setProbeVolumeEnabled(enabled: boolean): void {
+    uniforms.probesEnabled.value = enabled ? 1 : 0;
+}
+
 // Declarations + the vendored sampler. Injected after <lights_pars_begin>. Requires WebGL2
 // (sampler3D / texture(vec3) is GLSL ES 3.0, which every MeshStandardMaterial compiles to
 // under three's WebGL2 renderer).
@@ -351,6 +362,7 @@ uniform vec3 probesMin;
 uniform vec3 probesMax;
 uniform vec3 probesResolution;
 uniform float probesIntensity;
+uniform float probesEnabled;
 
 // Sample the packed 3D SH atlas at a world position and evaluate L2 irradiance along
 // worldNormal. The 9 vec3 coefficients are packed across 7 RGBA sub-volumes stacked on Z,
@@ -420,7 +432,7 @@ const IRRADIANCE_ADD = /* glsl */ `
 {
     vec3 probeWorldPos = ( ( vec4( geometryPosition, 1.0 ) - viewMatrix[ 3 ] ) * viewMatrix ).xyz;
     vec3 probeWorldNormal = normalize( ( vec4( geometryNormal, 0.0 ) * viewMatrix ).xyz );
-    irradiance += getProbeVolumeIrradiance( probeWorldPos, probeWorldNormal ) * probesIntensity;
+    irradiance += getProbeVolumeIrradiance( probeWorldPos, probeWorldNormal ) * probesIntensity * probesEnabled;
 }
 `;
 
@@ -436,6 +448,7 @@ export function applyProbeVolume(material: THREE.MeshStandardMaterial): void {
         shader.uniforms.probesMax = uniforms.probesMax;
         shader.uniforms.probesResolution = uniforms.probesResolution;
         shader.uniforms.probesIntensity = uniforms.probesIntensity;
+        shader.uniforms.probesEnabled = uniforms.probesEnabled;
         shader.fragmentShader = shader.fragmentShader
             .replace('#include <lights_pars_begin>', `#include <lights_pars_begin>\n${PARS_GLSL}`)
             .replace('#include <lights_fragment_begin>', `#include <lights_fragment_begin>\n${IRRADIANCE_ADD}`);

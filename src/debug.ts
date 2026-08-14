@@ -2,7 +2,8 @@ import type { SparkRenderer } from '@sparkjsdev/spark';
 import { debug as ccDebug, kcc, MotionType, rigidBody, type World } from 'crashcat';
 import * as THREE from 'three';
 
-import type { Character } from './character';
+import type { Character } from './character-controller';
+import { setProbeVolumeEnabled } from './light-probes';
 import type { Performance } from './performance';
 
 const GROUND_STATE_NAMES: Record<number, string> = {
@@ -46,13 +47,27 @@ export type DebugOverlay = {
     showCrowd: boolean;
     /** Wireframe cylinder per crowd agent (radius × height). Rebuilt each frame. */
     crowdCylinders: THREE.LineSegments;
+    /** Whether companions/cats sample the baked light-probe volume (the SH GI material effect).
+     *  Default on; unchecking the "probe lighting" box zeroes the volume contribution. */
+    probeLighting: boolean;
+    /** Whether sun shadows are rendered. Default on; index applies this to the renderer each
+     *  frame (see setShadowsEnabled). Unchecking the "shadows" box turns them off. */
+    shadows: boolean;
+    /** Whether the character + cat models are drawn. Default on; index passes this into the
+     *  visual updates. Unchecking the "characters" box hides them (state keeps running). */
+    showCharacters: boolean;
+    /** Whether the screen-space HUD (crosshair, nameplate, objective marker, quest line,
+     *  controls hint) is shown. Default on; driven purely by CSS — the "hud" box toggles a
+     *  `hud-off` class on <body> that hides every `.hud` element (see createDebugOverlay). */
+    showHud: boolean;
 };
 
-function createCheckbox(label: string, onChange: (checked: boolean) => void): HTMLLabelElement {
+function createCheckbox(label: string, onChange: (checked: boolean) => void, checked = false): HTMLLabelElement {
     const wrapper = document.createElement('label');
     wrapper.style.cssText = 'display:flex;gap:6px;align-items:center;cursor:pointer;user-select:none';
     const input = document.createElement('input');
     input.type = 'checkbox';
+    input.checked = checked;
     input.addEventListener('change', () => onChange(input.checked));
     wrapper.append(input, label);
     return wrapper;
@@ -192,7 +207,20 @@ export function createDebugOverlay(perf: Performance): DebugOverlay {
         probeGroup: null,
         showCrowd: false,
         crowdCylinders,
+        probeLighting: true,
+        shadows: true,
+        showCharacters: true,
+        showHud: true,
     };
+
+    // One-time rule the "hud" toggle flips: hide every `.hud` element at once. `!important` beats
+    // the per-frame inline `display` each HUD module sets, so nothing fights it back on.
+    if (!document.getElementById('hud-toggle-style')) {
+        const style = document.createElement('style');
+        style.id = 'hud-toggle-style';
+        style.textContent = 'body.hud-off .hud{display:none!important}';
+        document.head.appendChild(style);
+    }
 
     const orbitCheckbox = createCheckbox('orbit camera', (checked) => {
         overlay.orbitMode = checked;
@@ -216,11 +244,67 @@ export function createDebugOverlay(perf: Performance): DebugOverlay {
         crowdCylinders.visible = checked;
     });
 
+    // --- Feature toggles (default ON — unchecking disables the effect) ---
+    // Probe lighting: the baked SH GI material effect on the companions/cats. Applied straight to
+    // the shared volume uniform here (no per-frame work); the "light probes" box above is separate
+    // (it draws the probe gizmo spheres).
+    const probeLightingCheckbox = createCheckbox(
+        'probe lighting',
+        (checked) => {
+            overlay.probeLighting = checked;
+            setProbeVolumeEnabled(checked);
+        },
+        true,
+    );
+
+    // Shadows: sun shadow-mapping. index reads overlay.shadows each frame and applies it to the
+    // renderer/sun (setShadowsEnabled), since that needs the renderer.
+    const shadowsCheckbox = createCheckbox(
+        'shadows',
+        (checked) => {
+            overlay.shadows = checked;
+        },
+        true,
+    );
+
+    // Characters: the crew + cat models. index passes overlay.showCharacters into the visual
+    // updates, which hide the meshes (keeping their state/animation running).
+    const charactersCheckbox = createCheckbox(
+        'characters',
+        (checked) => {
+            overlay.showCharacters = checked;
+        },
+        true,
+    );
+
+    // HUD: the screen-space overlays (crosshair, nameplate, objective marker, quest line, controls
+    // hint). Pure CSS — flip the `hud-off` body class and the rule above hides every `.hud` element.
+    const hudCheckbox = createCheckbox(
+        'hud',
+        (checked) => {
+            overlay.showHud = checked;
+            document.body.classList.toggle('hud-off', !checked);
+        },
+        true,
+    );
+
     const lodSlider = createRange('lod scale', { min: 0.2, max: 2, step: 0.05, value: perf.lodScale }, (value) => {
         perf.lodScale = value;
     });
 
-    element.append(orbitCheckbox, colliderCheckbox, navmeshCheckbox, probeCheckbox, crowdCheckbox, lodSlider, overlay.text);
+    element.append(
+        orbitCheckbox,
+        colliderCheckbox,
+        navmeshCheckbox,
+        probeCheckbox,
+        crowdCheckbox,
+        probeLightingCheckbox,
+        shadowsCheckbox,
+        charactersCheckbox,
+        hudCheckbox,
+        lodSlider,
+        overlay.text,
+    );
     document.body.appendChild(element);
 
     window.addEventListener('keydown', (event) => {

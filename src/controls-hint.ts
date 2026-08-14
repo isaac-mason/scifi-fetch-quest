@@ -37,6 +37,7 @@ export function createControlsHint(): ControlsHint {
     }
     const root = document.createElement('div');
     root.id = 'ctrl-hint';
+    root.className = 'hud'; // debug "hud" toggle hides it with the rest of the HUD
     root.style.display = 'none';
     root.innerHTML = HINTS.map(
         ([keys, label]) =>

@@ -2,7 +2,7 @@ import { kcc } from 'crashcat';
 import type { Vec3 } from 'mathcat';
 import type * as THREE from 'three';
 
-import { type Character, EYE_HEIGHT } from './character';
+import { type Character, EYE_HEIGHT } from './character-controller';
 import { CHARACTER_LOOK_TARGET, CHARACTER_SPAWN } from './scene';
 
 const LOOK_SENSITIVITY = 0.0022; // radians per pixel of mouse movement
