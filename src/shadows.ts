@@ -4,17 +4,6 @@ import * as THREE from 'three';
 import { type Physics, raycastCollider } from './physics';
 import { KEY_LIGHT_INTENSITY } from './scene';
 
-// Sun shadows for the crowd. Splats can't cast/receive shadows, so a classic shadow-map trick:
-// the directional sun casts, the crew + cats are the casters, and the collision mesh (aligned to
-// the world) is reused as an invisible ShadowMaterial receiver - so shadows land on the splat
-// floor and conform to the real terrain. The ortho frustum follows the player (updateShadows) to
-// keep a modest map high-res around the action.
-//
-// Through-wall bleed (a phantom shadow of a hidden character) is cheaply approximated: each frame
-// raycast camera->caster; if a wall blocks the view, ramp that caster's whole shadow out
-// (updateShadowCasters). The catcher shader scales each fragment by the nearest caster's visibility.
-// Coarse (per-character) but smooth and near-free - one ray per character.
-
 const SHADOW_MAP_SIZE = 1024;
 const SHADOW_HALF_EXTENT = 12; // world metres the shadow frustum spans around the player
 const SUN_OFFSET = new THREE.Vector3(8, 20, 8); // sun position relative to the followed point
@@ -39,8 +28,8 @@ export type Shadows = {
     sun: THREE.DirectionalLight;
 };
 
-// Enable shadow mapping + create the shadow-casting sun. Catcher attached later (attachShadowCatcher).
 export function initShadows(scene: THREE.Scene, renderer: THREE.WebGLRenderer): Shadows {
+    // Enable shadow mapping + create the shadow-casting sun. Catcher attached later (attachShadowCatcher).
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -132,6 +121,7 @@ export function updateShadowCasters(
     camera: THREE.Camera,
     casters: readonly { position: Vec3 }[],
     dt: number,
+    occlude = true,
 ): void {
     _camPos[0] = camera.position.x;
     _camPos[1] = camera.position.y;
@@ -143,16 +133,20 @@ export function updateShadowCasters(
         const p = casters[i].position;
         casterUniforms.uCasters.value[i].set(p[0], p[2]);
 
-        // Ray from the camera to the caster's chest; a hit before it means a wall is in the way.
-        _rayDir[0] = p[0] - _camPos[0];
-        _rayDir[1] = p[1] + VIS_RAY_HEIGHT - _camPos[1];
-        _rayDir[2] = p[2] - _camPos[2];
-        const dist = Math.hypot(_rayDir[0], _rayDir[1], _rayDir[2]) || 1;
-        _rayDir[0] /= dist;
-        _rayDir[1] /= dist;
-        _rayDir[2] /= dist;
-        const hit = raycastCollider(physics, _camPos, _rayDir, dist);
-        const target = hit < dist - 0.1 ? 0 : 1; // occluded -> fade out
+        // Occlusion disabled (debug): skip the raycast and keep every shadow fully visible.
+        let target = 1;
+        if (occlude) {
+            // Ray from the camera to the caster's chest; a hit before it means a wall is in the way.
+            _rayDir[0] = p[0] - _camPos[0];
+            _rayDir[1] = p[1] + VIS_RAY_HEIGHT - _camPos[1];
+            _rayDir[2] = p[2] - _camPos[2];
+            const dist = Math.hypot(_rayDir[0], _rayDir[1], _rayDir[2]) || 1;
+            _rayDir[0] /= dist;
+            _rayDir[1] /= dist;
+            _rayDir[2] /= dist;
+            const hit = raycastCollider(physics, _camPos, _rayDir, dist);
+            target = hit < dist - 0.1 ? 0 : 1; // occluded -> fade out
+        }
 
         visSmoothed[i] += (target - visSmoothed[i]) * step;
         casterUniforms.uCasterVis.value[i] = visSmoothed[i];

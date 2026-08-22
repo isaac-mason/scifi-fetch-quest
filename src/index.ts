@@ -53,45 +53,35 @@ const IS_TOUCH = typeof matchMedia === 'function' && matchMedia('(pointer: coars
 function init() {
     const scene = new THREE.Scene();
 
-    // Neutral fill for the companions (splats are self-lit and ignore these). Intensities in scene.ts.
-    scene.add(new THREE.AmbientLight(0xffffff, AMBIENT_INTENSITY));
-    const hemi = new THREE.HemisphereLight(0xbfd4ff, 0x202028, HEMI_INTENSITY);
-    scene.add(hemi);
-    // Key light (shape + companion shadows, follows player) lives in shadows.ts, created below.
+    const ambientLight = new THREE.AmbientLight(0xffffff, AMBIENT_INTENSITY)
+    scene.add(ambientLight);
+    const hemiLight = new THREE.HemisphereLight(0xbfd4ff, 0x202028, HEMI_INTENSITY);
+    scene.add(hemiLight);
 
-    // Companions are lit by the baked probe VOLUME (light-probes.ts), sampled per-fragment on the GPU.
-
-    // Near plane inside HEAD_CLEARANCE so the ceiling doesn't clip into it on a jump.
-    const CAMERA_NEAR = 0.05;
-    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, CAMERA_NEAR, 1000);
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 1000);
     camera.position.set(CAMERA_POSITION[0], CAMERA_POSITION[1], CAMERA_POSITION[2]);
 
-    // antialias: false for Spark - MSAA doesn't help splats and costs perf.
     const renderer = new THREE.WebGLRenderer({ antialias: false });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_DPR));
     const app = document.querySelector<HTMLDivElement>('#app') ?? document.body;
     app.appendChild(renderer.domElement);
 
-    // Shadow mapping + key light (shadows.ts). Companions cast onto an invisible collider-built
-    // receiver (attached in load()) since splats can't receive real shadows.
     const shadows = initShadows(scene, renderer);
 
-    // SparkRenderer drives splat sorting + LOD streaming for the .rad file. Widened foveation cone
-    // keeps corner splats full-res (defaults: coneFov0 90, coneFov 120, coneFoveate 0.4).
     const spark = new SparkRenderer({
         renderer,
         coneFov0: 120,
         coneFov: 160,
         coneFoveate: 0.5,
     });
+
     scene.add(spark);
 
-    // paged: true streams LOD chunks on demand via HTTP Range requests instead of downloading the
-    // whole 136 MB .rad up front. splat.initialized resolves immediately (wired up, not downloaded).
     const splat = new SplatMesh({ url: encodeURI(SPLAT_URL), paged: true });
-    splat.recolor.setScalar(SPLAT_BRIGHTNESS); // whole-splat brightness (free HDR rgb multiply)
     scene.add(splat);
+
+    splat.recolor.setScalar(SPLAT_BRIGHTNESS);
 
     // Orbit camera - debug "orbit camera" mode only; starts disabled (first-person drives by default).
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -290,7 +280,7 @@ function update(state: State, dt: number, time: number) {
     setShadowsEnabled(state.shadows, state.renderer, state.debug.shadows);
 
     updateShadows(state.shadows, playerPosition[0], state.groundY, playerPosition[2]);
-    updateShadowCasters(state.physics, state.camera, state.characters.list, dt); // fade occluded casters' shadows
+    updateShadowCasters(state.physics, state.camera, state.characters.list, dt, state.debug.shadowOcclusion); // fade occluded casters' shadows
 
     if (state.debug.showCrowd && state.navigation.crowd) {
         updateCrowdDebug(state.debug, Object.values(state.navigation.crowd.agents));
@@ -327,6 +317,7 @@ function update(state: State, dt: number, time: number) {
             camera: state.camera,
             renderer: state.renderer,
             suppressed: isDialogueOpen(state.dialogue) || state.launch.active || !state.fp.enabled,
+            showRibbon: state.debug.questRibbon,
         },
         time,
     );

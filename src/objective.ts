@@ -34,6 +34,7 @@ export type ObjectiveWorld = {
     camera: THREE.PerspectiveCamera;
     renderer: THREE.WebGLRenderer;
     suppressed: boolean;
+    showRibbon: boolean; // debug: false hides the breadcrumb ribbon (marker stays)
 };
 
 // Where the marker anchors: top of a crew member's head (feet + model height), the ship's origin
@@ -66,7 +67,7 @@ export function updateObjective(obj: Objective, w: ObjectiveWorld, time: number)
     // Recompute the route every frame so the ribbon tracks you. Chevron placement is anchored to
     // world space inside the trail (goal-end sampling + goal-anchored UVs + easing), so chevrons
     // hold their spots instead of jumping as the path re-solves.
-    if (!objKey) {
+    if (!objKey || !w.showRibbon) {
         hidePathTrail(obj.trail);
         return;
     }

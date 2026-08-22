@@ -45,6 +45,10 @@ export type DebugOverlay = {
     probeLighting: boolean;
     /** Whether sun shadows are rendered. Default on; applied each frame via setShadowsEnabled. */
     shadows: boolean;
+    /** Whether occluded casters' shadows fade out (view raycast). Default on; off = shadows always shown. */
+    shadowOcclusion: boolean;
+    /** Whether the objective breadcrumb ribbon is drawn. Default on; the marker is unaffected. */
+    questRibbon: boolean;
     /** Whether the character + cat models are drawn. Default on; state keeps running when hidden. */
     showCharacters: boolean;
     /** Whether the screen-space HUD is shown. Default on; CSS `hud-off` body class hides `.hud`. */
@@ -194,6 +198,8 @@ export function createDebugOverlay(perf: Performance): DebugOverlay {
         crowdCylinders,
         probeLighting: true,
         shadows: true,
+        shadowOcclusion: true,
+        questRibbon: true,
         showCharacters: true,
         showHud: true,
     };
@@ -249,6 +255,26 @@ export function createDebugOverlay(perf: Performance): DebugOverlay {
         true,
     );
 
+    // Shadow occlusion: the view raycast that fades a caster's shadow when a wall hides them.
+    // Off keeps shadows on but always fully visible (skips the per-caster raycasts in updateShadowCasters).
+    const shadowOcclusionCheckbox = createCheckbox(
+        'shadow occlusion',
+        (checked) => {
+            overlay.shadowOcclusion = checked;
+        },
+        true,
+    );
+
+    // Quest ribbon: the breadcrumb strip along the route to the objective. Off hides the ribbon
+    // (and skips its per-frame path re-solve in updateObjective); the objective marker stays.
+    const questRibbonCheckbox = createCheckbox(
+        'quest ribbon',
+        (checked) => {
+            overlay.questRibbon = checked;
+        },
+        true,
+    );
+
     // Characters: crew + cat models. Hides the meshes while keeping their state/animation running.
     const charactersCheckbox = createCheckbox(
         'characters',
@@ -280,6 +306,8 @@ export function createDebugOverlay(perf: Performance): DebugOverlay {
         crowdCheckbox,
         probeLightingCheckbox,
         shadowsCheckbox,
+        shadowOcclusionCheckbox,
+        questRibbonCheckbox,
         charactersCheckbox,
         hudCheckbox,
         lodSlider,
