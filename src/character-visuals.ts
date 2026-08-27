@@ -86,21 +86,17 @@ export function initCharacterVisuals(scene: THREE.Scene): CharacterVisuals {
     return { scene, templates: new Map(), views: new Map() };
 }
 
-// Load every model template and precompute its fit scale + foot offset. Await before spawning
-// characters. A model whose GLTF fails to load is skipped (its characters never get a view).
 export async function loadCharacterVisuals(visuals: CharacterVisuals): Promise<void> {
     const loader = new GLTFLoader();
-    // Crew .glb use EXT_meshopt_compression; the decoder is harmless for models that don't.
     loader.setMeshoptDecoder(MeshoptDecoder);
     await Promise.all(
         CHARACTER_MODELS.map(async (spec) => {
             try {
                 const gltf = await loader.loadAsync(spec.url);
                 gltf.scene.traverse((o) => {
-                    o.frustumCulled = false; // skinned bounds are unreliable -> avoid cull flicker
                     const mesh = o as THREE.Mesh;
                     if (mesh.isMesh) {
-                        mesh.castShadow = true; // NPCs cast + receive each other's shadows
+                        mesh.castShadow = true;
                         mesh.receiveShadow = true;
                     }
                 });

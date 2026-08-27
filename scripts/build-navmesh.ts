@@ -1,5 +1,5 @@
 /**
- * Build a solo navmesh from the Spark collider GLB, then FLOOD-FILL PRUNE it.
+ * Build a solo navmesh from the collider GLB and flood fill prunes it.
  *
  * Reads the collider .glb, extracts world-space walkable geometry via
  * gltf-transform, generates a solo navmesh with navcat, then keeps only the polys
@@ -50,11 +50,6 @@ const SEED: Vec3 = [3, 1, -14];
 // Search box for snapping the seed onto a poly (world units). Generous in Y so the
 // seed height doesn't have to be exact.
 const SEED_HALF_EXTENTS: Vec3 = [1, 4, 1];
-
-/* -------------------------------------------------------------------------- */
-/*  Flood-fill prune: keep only polys reachable from the seed.                 */
-/*  Copied from navcat's example-flood-fill-pruning (public API only).         */
-/* -------------------------------------------------------------------------- */
 
 /**
  * Produces sanitized params for `tile` containing only the polys whose

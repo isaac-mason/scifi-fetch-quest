@@ -63,8 +63,6 @@ export async function loadNavigation(navigation: Navigation): Promise<void> {
 
     navigation.navMesh = navMesh;
     navigation.crowd = crowd.create(CROWD_MAX_AGENT_RADIUS);
-    // Default placement tolerance is just maxAgentRadius (tiny); widen it so an agent snaps onto
-    // the navmesh even if its spawn point isn't exactly on a poly.
     navigation.crowd.agentPlacementHalfExtents = [1, 2, 1];
 }
 

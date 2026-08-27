@@ -16,15 +16,9 @@ import {
 import { addCharacterCollider, groundAt, moveCharacterCollider, type Physics, removeCharacterCollider } from './physics';
 import { CATS_CENTER, CATS_COUNT, CATS_SPREAD, QUEST_CAST } from './scene';
 
-// Unified NPC data model. Every non-player character (crew and cats) is a Character: a navcat crowd
-// agent + a ghost view-ray sensor + a grounded feet position + a behaviour. Owns the data and
-// per-frame kinematics/steering, no three.js. character-visuals.ts draws a model per id.
-// Crew vs cat differ only by behaviour: crew `follow`; cats `wander`, then finale `goto` + `hop`.
-
-// --- Behaviours (tagged union) -------------------------------------------------------------------
-
 // Crew: parked at a room anchor (`stationary`) until the quest flips them to `following` the player.
 export type FollowBehaviour = { kind: 'follow'; mode: 'stationary' | 'following'; target: Vec3; facePlayer: boolean };
+
 // Cats loitering: stop-and-go wander around a centre; hold + face the player while being talked to.
 export type WanderBehaviour = {
     kind: 'wander';
@@ -37,8 +31,10 @@ export type WanderBehaviour = {
     retarget: number; // seconds before giving up on an unreachable target
     talking: boolean; // held + facing the player while being talked to
 };
+
 // Finale step 1: steer the agent to a world point (the gather spot under the ship).
 export type GotoBehaviour = { kind: 'goto'; target: Vec3 };
+
 // Finale step 2: procedural arc leap from `from` to `to`; despawns when `timer` runs out.
 export type HopBehaviour = { kind: 'hop'; from: Vec3; to: Vec3; timer: number };
 
@@ -402,7 +398,7 @@ function faceIntent(ch: Character, playerPos: Vec3): { yaw: number; rate: number
 // crew hold their anchor.
 function stepFollow(ch: Character, b: FollowBehaviour, navigation: Navigation, playerPos: Vec3): void {
     if (b.mode === 'stationary') {
-        setAgentVelocity(navigation, ch.id, [0, 0, 0]); // don't let avoidance drift the anchor
+        setAgentVelocity(navigation, ch.id, [0, 0, 0]);
         return;
     }
     const px = ch.position[0];
@@ -417,7 +413,6 @@ function stepFollow(ch: Character, b: FollowBehaviour, navigation: Navigation, p
             b.target[2] = playerPos[2];
         }
     } else {
-        // Arrived near the player: decelerate; reset target to here so REISSUE_DIST re-triggers.
         setAgentVelocity(navigation, ch.id, [0, 0, 0]);
         b.target[0] = px;
         b.target[1] = ch.position[1];
