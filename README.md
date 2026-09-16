@@ -43,24 +43,7 @@ Chrome is only needed to re-bake light probes (`pnpm bake:probes`), not to run t
 - Jump: `Space`, sprint: hold `Shift`
 - Debug panel: backtick
 
-## How it works
-
-A Gaussian splat is only visuals: a cloud of coloured blobs with no floor, walls, or sense of which blobs are solid. Everything interactive comes from invisible data aligned with the splat.
-
-- Collider (`src/collider-load.ts`, `src/physics.ts`). A hand-authored triangle mesh of the hull and floors (`scifi_world_collider.glb`), loaded at runtime. crashcat uses it for swept-capsule collisions, the interaction ray, and grounding raycasts. It also doubles as the shadow receiver.
-- Character controller (`src/character-controller.ts`, `src/controls.ts`). A crashcat kinematic capsule with Quake-style movement (ground friction, air strafe, bunny hop), pointer-lock mouse look, and view bob.
-- Navmesh and crowd (`src/navigation.ts`, `src/characters.ts`, `src/cats.ts`). The crew and the cats are navcat crowd agents that path around the ship and avoid each other. The player is a target-less proxy agent pinned to your feet so they steer around you too.
-- Cast (`src/character-visuals.ts`, `src/cats.ts`). Animated models that blend idle and walk by speed, turn to face you while talking, and, for the cats, wander, meow, and hop into the ship at the finale.
-- Dialogue (`src/dialogue.ts`, `src/voice.ts`). A radial response wheel and an animalese typewriter voice, pure Web Audio with no samples.
-- HUD (`src/nameplate.ts`, `src/objective-marker.ts`, `src/path-trail.ts`, `src/quest-hud.ts`). Talk prompt, world-space objective marker, floor chevron ribbon, and objective line.
-- Shadows (`src/shadows.ts`). A directional sun casts the crew and cats onto the collider mesh, reused as an invisible `ShadowMaterial` receiver so shadows follow the real floor.
-- Lighting (`src/light-probes.ts`). The cast is lit by a baked order-2 SH light-probe volume sampled per fragment, so their colour changes as they move through the ship.
-
-The collider, navmesh, and probe grid are baked once offline and loaded directly. A loading overlay stays up until enough of the splat is on screen; it counts drawn splats rather than waiting a fixed time.
-
 ## Asset pipeline
-
-Everything the browser loads is prepared offline, so there is no heavy parsing at runtime. The hand-authored collision mesh is the shared source for both the runtime collider and the navmesh. The light-probe grid is baked from the ship splat itself.
 
 ```bash
 pnpm build:navmesh    # public/navmesh.json        from the collider .glb
