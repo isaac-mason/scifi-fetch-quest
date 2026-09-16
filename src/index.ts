@@ -21,6 +21,7 @@ import {
     attachProbeGizmos,
     buildColliderDebug,
     createDebugOverlay,
+    updateCharacterColliderDebug,
     updateCrowdDebug,
     updateDebugOverlay,
 } from './debug';
@@ -64,7 +65,7 @@ function init() {
     const renderer = new THREE.WebGLRenderer({ antialias: false });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_DPR));
-    const app = document.querySelector<HTMLDivElement>('#app') ?? document.body;
+    const app = document.querySelector<HTMLDivElement>('#app')!;
     app.appendChild(renderer.domElement);
 
     const shadows = initShadows(scene, renderer);
@@ -96,6 +97,7 @@ function init() {
     // Debug panel (toggle with backtick): mode toggle, collider/navmesh wireframes, LOD slider, readout.
     const debug = createDebugOverlay(perf);
     scene.add(debug.colliderLines);
+    scene.add(debug.characterColliderLines);
     scene.add(debug.crowdCylinders);
 
     const physics = initPhysics();
@@ -281,6 +283,8 @@ function update(state: State, dt: number, time: number) {
 
     updateShadows(state.shadows, playerPosition[0], state.groundY, playerPosition[2]);
     updateShadowCasters(state.physics, state.camera, state.characters.list, dt, state.debug.shadowOcclusion); // fade occluded casters' shadows
+
+    updateCharacterColliderDebug(state.debug, state.physics); // no-op unless the toggle is on
 
     if (state.debug.showCrowd && state.navigation.crowd) {
         updateCrowdDebug(state.debug, Object.values(state.navigation.crowd.agents));

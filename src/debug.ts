@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import type { Character } from './character-controller';
 import { setProbeVolumeEnabled } from './light-probes';
 import type { Performance } from './performance';
+import type { Physics } from './physics';
 
 const GROUND_STATE_NAMES: Record<number, string> = {
     [kcc.GroundState.ON_GROUND]: 'on ground',
@@ -37,6 +38,10 @@ export type DebugOverlay = {
     showProbes: boolean;
     /** One SH-shaded sphere per probe cell; attached via attachProbeGizmos once the volume loads. */
     probeGroup: THREE.Group | null;
+    /** Whether the character capsule wireframes are drawn (toggled by the checkbox). */
+    showCharacterColliders: boolean;
+    /** Player + NPC capsule wireframes. Kinematic, so rebuilt each frame. */
+    characterColliderLines: THREE.LineSegments;
     /** Whether the crowd-agent cylinders are drawn (toggled by the checkbox). */
     showCrowd: boolean;
     /** Wireframe cylinder per crowd agent (radius x height). Rebuilt each frame. */
@@ -177,6 +182,15 @@ export function createDebugOverlay(perf: Performance): DebugOverlay {
     colliderLines.visible = false;
     colliderLines.frustumCulled = false;
 
+    // Character capsules - the player's controller body + each NPC's view-ray sensor. They move, so
+    // this is rebuilt each frame (see updateCharacterColliderDebug). Coloured per-vertex.
+    const characterColliderLines = new THREE.LineSegments(
+        new THREE.BufferGeometry(),
+        new THREE.LineBasicMaterial({ vertexColors: true }),
+    );
+    characterColliderLines.visible = false;
+    characterColliderLines.frustumCulled = false;
+
     // Crowd-agent cylinders - rebuilt each frame from the live agents (see updateCrowdDebug).
     const crowdCylinders = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x33e0ff }));
     crowdCylinders.visible = false;
@@ -192,6 +206,8 @@ export function createDebugOverlay(perf: Performance): DebugOverlay {
         showNavMesh: false,
         orbitMode: false,
         colliderLines,
+        showCharacterColliders: false,
+        characterColliderLines,
         showProbes: false,
         probeGroup: null,
         showCrowd: false,
@@ -218,6 +234,13 @@ export function createDebugOverlay(perf: Performance): DebugOverlay {
 
     const colliderCheckbox = createCheckbox('collider debug', (checked) => {
         colliderLines.visible = checked;
+    });
+
+    // Character colliders: the moving capsules (player controller + the ghost sensors the view ray
+    // hits), as opposed to the static level geometry above.
+    const characterColliderCheckbox = createCheckbox('character collider debug', (checked) => {
+        overlay.showCharacterColliders = checked;
+        characterColliderLines.visible = checked;
     });
 
     const navmeshCheckbox = createCheckbox('navmesh debug', (checked) => {
@@ -301,6 +324,7 @@ export function createDebugOverlay(perf: Performance): DebugOverlay {
     element.append(
         orbitCheckbox,
         colliderCheckbox,
+        characterColliderCheckbox,
         navmeshCheckbox,
         probeCheckbox,
         crowdCheckbox,
@@ -373,6 +397,28 @@ export function addStageSkips(overlay: DebugOverlay, stages: string[], onSkip: (
     overlay.element.insertBefore(row, overlay.text);
 }
 
+// Concatenate crashcat wireframe segments into a geometry's position/color attributes, reusing the
+// existing buffers unless the vertex count changed (`total` floats, so they end up exactly full).
+function writeDebugLines(geometry: THREE.BufferGeometry, parts: ReturnType<typeof ccDebug.body>[], total: number): void {
+    let position = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+    let color = geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
+    if (!position || !color || position.array.length !== total) {
+        position = new THREE.BufferAttribute(new Float32Array(total), 3);
+        color = new THREE.BufferAttribute(new Float32Array(total), 3);
+        geometry.setAttribute('position', position);
+        geometry.setAttribute('color', color);
+    }
+
+    let offset = 0;
+    for (const part of parts) {
+        (position.array as Float32Array).set(part.vertices, offset);
+        (color.array as Float32Array).set(part.colors, offset);
+        offset += part.vertices.length;
+    }
+    position.needsUpdate = true;
+    color.needsUpdate = true;
+}
+
 // Build the static collider wireframe once (colliders never move); the checkbox just toggles it.
 // Call once the physics world's static bodies exist (e.g. after createSplatCollider).
 export function buildColliderDebug(overlay: DebugOverlay, world: World): void {
@@ -384,19 +430,29 @@ export function buildColliderDebug(overlay: DebugOverlay, world: World): void {
         parts.push(segments);
         total += segments.vertices.length;
     }
+    writeDebugLines(overlay.colliderLines.geometry, parts, total);
+}
 
-    const positions = new Float32Array(total);
-    const colors = new Float32Array(total);
-    let offset = 0;
-    for (const { vertices, colors: c } of parts) {
-        positions.set(vertices, offset);
-        colors.set(c, offset);
-        offset += vertices.length;
+const PLAYER_CAPSULE_COLOR: [number, number, number] = [1, 0.62, 0.15]; // the KCC's own capsule
+const NPC_CAPSULE_COLOR: [number, number, number] = [1, 0.25, 0.85]; // crew + cat view-ray sensors
+
+// Rebuild the character capsules each frame: the player's controller body plus every live NPC
+// sensor (the ghost capsules the talk ray hits). Despawned sensors are skipped - they're unmapped
+// from bodyToCharacter but left in the world. Static level geometry is buildColliderDebug instead.
+export function updateCharacterColliderDebug(overlay: DebugOverlay, physics: Physics): void {
+    if (!overlay.showCharacterColliders) return;
+
+    let total = 0;
+    const parts: ReturnType<typeof ccDebug.body>[] = [];
+    for (const body of rigidBody.iterate(physics.world)) {
+        if (body.motionType === MotionType.STATIC) continue;
+        const isPlayer = body.id === physics.playerBodyId;
+        if (!isPlayer && !physics.bodyToCharacter.has(body.id)) continue;
+        const segments = ccDebug.body(body, { color: isPlayer ? PLAYER_CAPSULE_COLOR : NPC_CAPSULE_COLOR });
+        parts.push(segments);
+        total += segments.vertices.length;
     }
-
-    const geometry = overlay.colliderLines.geometry;
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    writeDebugLines(overlay.characterColliderLines.geometry, parts, total);
 }
 
 // Minimal structural view of a crowd agent - enough to draw its cylinder.

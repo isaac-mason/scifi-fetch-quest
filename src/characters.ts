@@ -66,6 +66,7 @@ const FOLLOW_HEIGHT = 1.3; // agent height (a bit taller than the ~1m player)
 const FOLLOW_SPEED = 3.4; // m/s - roughly matches the player's 3.5 walk
 const STOP_DISTANCE = 1.2; // hold this far from the player instead of crowding them
 const REISSUE_DIST = 0.4; // only re-aim once the player has moved this far (avoids thrash)
+const CREW_SENSOR_RADIUS = 0.25; // view-ray sensor capsule - slim, these are narrow mech bodies
 const CREW_HEAD = 0.72; // camera look-at height (~face level; crew models are ~1m tall)
 const LOOK_AT_RANGE = 6; // metres within which an idle crew member ambiently turns to face you
 const FACE_IDLE_RATE = 1.2; // per second - ambient turn toward you while idle
@@ -76,12 +77,13 @@ const CAT_RADIUS = 0.25; // crowd avoidance radius
 const CAT_AGENT_HEIGHT = 0.4; // crowd agent height (distinct from the model fit height in scene.ts)
 const CAT_SPEED = 0.55; // m/s stroll
 const CAT_HEAD = 0.18; // camera look-at height above a cat's feet
-const CAT_SENSOR_RADIUS = 0.4; // view-ray sensor capsule
+const CAT_SENSOR_RADIUS = 0.2; // view-ray sensor capsule
 const CAT_SENSOR_HEIGHT = 0.6;
 const ARRIVE_DIST = 0.4; // within this of its target, a cat stops for a bit
 const RETARGET_MAX = 6; // seconds before giving up on a target it can't reach
 const PAUSE_MIN = 0.8; // seconds a cat loiters between strolls (stop-and-go)
 const PAUSE_MAX = 3.0;
+const TALK_RELEASE_PAUSE = 0.6; // seconds a cat holds still after you stop talking to it
 const BOARD_SPEED = 2.6; // m/s - a proper dash to the ship (vs the lazy wander speed)
 const HOP_DUR = 0.6; // seconds of the finale leap into the ship (procedural; model has no jump clip)
 const HOP_LIFT = 0.5; // metres of extra arc height at the peak of the hop
@@ -151,7 +153,7 @@ export function spawnCrew(characters: Characters, navigation: Navigation, physic
             agentRadius: FOLLOW_RADIUS,
             agentHeight: FOLLOW_HEIGHT,
             agentSpeed: FOLLOW_SPEED,
-            sensorRadius: FOLLOW_RADIUS,
+            sensorRadius: CREW_SENSOR_RADIUS,
             sensorHeight: FOLLOW_HEIGHT,
         });
         if (!base) continue;
@@ -235,20 +237,17 @@ export function setCharacterFollowing(characters: Characters, id: string): void 
     if (ch && ch.behaviour.kind === 'follow') ch.behaviour.mode = 'following';
 }
 
-// Turn a crew member quickly to face the player while talking (true on open, false on close).
-// No-op for non-follow characters.
-export function setFacePlayer(ch: Character, on: boolean): void {
+// Set/clear a character's "being talked to" hold (true on open, false on close): crew turn quickly
+// to face you, cats stop where they are and face you, loitering briefly on release. Other
+// behaviours (goto/hop) aren't talkable, so this is a no-op for them.
+export function setTalking(ch: Character, on: boolean): void {
     if (ch.behaviour.kind === 'follow') ch.behaviour.facePlayer = on;
-}
-
-// Set/clear a cat's "being talked to" hold (stops and faces you); on release it loiters briefly.
-// No-op for non-wander characters.
-export function setCatTalking(ch: Character, on: boolean): void {
-    if (ch.behaviour.kind !== 'wander') return;
-    ch.behaviour.talking = on;
-    if (!on) {
-        ch.behaviour.state = 'paused';
-        ch.behaviour.pauseTimer = 0.6;
+    else if (ch.behaviour.kind === 'wander') {
+        ch.behaviour.talking = on;
+        if (!on) {
+            ch.behaviour.state = 'paused';
+            ch.behaviour.pauseTimer = TALK_RELEASE_PAUSE;
+        }
     }
 }
 

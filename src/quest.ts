@@ -17,14 +17,13 @@ import {
     hopCats,
     isTalkable,
     requestCharacterEmote,
-    setCatTalking,
     setCharacterFollowing,
-    setFacePlayer,
+    setTalking,
 } from './characters';
 import { setControlsPaused } from './controls';
 import { type DialogueNode, isDialogueOpen, openDialogue, showLine } from './dialogue';
 import type { State } from './index';
-import { type NameTarget, updateNameplate } from './nameplate';
+import { updateNameplate } from './nameplate';
 import { setObjective } from './quest-hud';
 import {
     STRIKER_BOARD_POS,
@@ -45,14 +44,13 @@ export function initQuest(): Quest {
     return { stage: 'george' };
 }
 
-// One entry per stage, in quest order.
 type StageInfo = {
     stage: Stage;
-    suspect: string | null; // model you talk to this stage ('cat' = the cat); null once closed
-    marker: string | null; // objective-marker target ('George'...'Stan' | 'ship'); null once closed
-    objective: string; // full HUD line
-    short: string; // objective-marker label
-    node: DialogueNode | null; // active exchange shown when you talk to `suspect`
+    suspect: string | null;
+    marker: string | null;
+    objective: string;
+    short: string;
+    node: DialogueNode | null;
 };
 
 const STAGE_LIST: StageInfo[] = [
@@ -230,7 +228,7 @@ const CREW: Record<string, { deflect: string; theory: string; apology: string }>
 };
 
 // Talking to the cat before the reveal: it plays dumb, you can only meow back.
-export const CAT_MEOW: DialogueNode = {
+const CAT_MEOW: DialogueNode = {
     speaker: 'cat',
     text: 'meow?',
     emote: 'Idle',
@@ -241,7 +239,10 @@ export const CAT_MEOW: DialogueNode = {
     ],
 };
 
+// The line shown when you talk to someone who isn't this stage's suspect. Rendered as a single
+// line to click past (no choices), except the cat's meow wheel.
 function bark(model: string, q: Quest): DialogueNode {
+    if (model === 'cat') return CAT_MEOW; // it plays dumb until stan's footage outs it
     const crew = CREW[model];
     // Following once the quest is past this member's accusation stage: they trail you and muse
     // their theory instead of shooing you off.
@@ -263,12 +264,7 @@ function bark(model: string, q: Quest): DialogueNode {
         text = crew?.deflect ?? '…';
         emote = 'No'; // brush-off at their post
     }
-    return {
-        speaker: model.toLowerCase(),
-        text,
-        emote,
-        choices: [{ label: q.stage === 'closed' ? '…yeah.' : 'right.', reply: '', emote }],
-    };
+    return { speaker: model.toLowerCase(), text, emote, choices: [] };
 }
 
 // The node shown when the player talks to `model`, plus whether it's the active exchange (the
@@ -296,50 +292,32 @@ function endFocus(state: State): void {
     state.focus = null;
 }
 
-// Talk to a crowd character: open their quest node, look at them, and (for the current suspect)
-// advance the accusation + fold them into the conga line when done.
-export function talkToCharacter(state: State, ch: Character): void {
+// Talk to a character. Their node comes from the quest (this stage's suspect gets the active
+// exchange, everyone else a bark); when the active exchange ends the quest advances -- the
+// suspect falls into the conga line behind you, or, for the cat's reveal, the finale takes over.
+export function talkTo(state: State, ch: Character): void {
     const { node, active } = dialogueFor(state.quest, ch.model);
-    setFacePlayer(ch, true); // turn to look at us while we talk
+    setTalking(ch, true); // hold + face the player for the duration
     beginFocus(state, [ch.position[0], ch.position[1] + ch.headHeight, ch.position[2]]);
     const emote = (e: string) => requestCharacterEmote(state.characters, ch.id, e); // per-line gesture
-    const done = () => {
-        setFacePlayer(ch, false);
-        if (active) {
-            advance(state.quest);
-            setObjective(state.questHud, objective(state.quest));
-            if (state.quest.stage !== 'closed') setCharacterFollowing(state.characters, ch.id);
+    const done = (): void => {
+        setTalking(ch, false);
+        if (!active) {
+            endFocus(state);
+            return;
         }
-        endFocus(state);
+        advance(state.quest);
+        setObjective(state.questHud, objective(state.quest));
+        if (state.quest.stage === 'closed') {
+            startLaunch(state, ch); // the reveal: follow this cat aboard, controls stay paused -> apology scene
+        } else {
+            setCharacterFollowing(state.characters, ch.id);
+            endFocus(state);
+        }
     };
-    // Active exchange -> response wheel; a bark -> a single line you read and click past.
-    if (active) openDialogue(state.dialogue, node, done, emote);
+    // Anything with responses gets the wheel; a bark is one line you read and click past.
+    if (node.choices.length > 0) openDialogue(state.dialogue, node, done, emote);
     else showLine(state.dialogue, node.speaker, node.text, node.emote, done, emote);
-}
-
-// Talk to a cat. Before the reveal it plays dumb ("meow?"); at stage 'cat' it gloats, then the
-// whole mob boards and the striker flies off.
-export function talkToCat(state: State, ch: Character): void {
-    const revealing = state.quest.stage === 'cat';
-    const node = revealing ? dialogueFor(state.quest, 'cat').node : CAT_MEOW;
-    setCatTalking(ch, true);
-    beginFocus(state, [ch.position[0], ch.position[1] + ch.headHeight, ch.position[2]]);
-    const emote = (e: string) => requestCharacterEmote(state.characters, ch.id, e); // cat clips (Spin/Idle)
-    openDialogue(
-        state.dialogue,
-        node,
-        () => {
-            setCatTalking(ch, false);
-            if (revealing) {
-                advance(state.quest); // -> closed
-                setObjective(state.questHud, objective(state.quest));
-                startLaunch(state, ch); // follow this cat aboard; keeps controls paused -> apology scene
-            } else {
-                endFocus(state);
-            }
-        },
-        emote,
-    );
 }
 
 // The crew's sheepish aftermath, watched as a scripted scene (camera pans to each).
@@ -577,7 +555,7 @@ export async function loadStriker(state: State): Promise<void> {
     }
 }
 
-const TALK_RANGE = 2; // metres - a ray-hit character/cat within this gets nameplate + prompt + talkable
+const TALK_RANGE = 2;
 
 // Per-frame interaction: cast a view ray to TALK_RANGE; a talkable hit (walls occlude) shows the
 // nameplate + prompt and opens the talk flow on interact. Suppressed while a dialogue is open or the
@@ -589,19 +567,12 @@ export function updateInteraction(state: State): void {
     }
     const hitBody = castViewRay(state.physics, state.camera, TALK_RANGE);
     const charId = hitBody != null ? state.physics.bodyToCharacter.get(hitBody) : undefined;
-    const hoveredChar = charId ? (state.characters.list.find((c) => c.id === charId) ?? null) : null;
+    const hovered = charId ? state.characters.list.find((c) => c.id === charId) : undefined;
+    const talkable = hovered && isTalkable(hovered) ? hovered : null;
 
-    let target: NameTarget | null = null;
-    let action: (() => void) | null = null;
-    if (hoveredChar && isTalkable(hoveredChar)) {
-        const ch = hoveredChar;
-        target = { name: ch.name, verb: 'talk' };
-        // Cats (wander) play the meow/reveal flow; crew (follow) open their quest node.
-        action = () => (ch.behaviour.kind === 'wander' ? talkToCat(state, ch) : talkToCharacter(state, ch));
-    }
     // A ray hit within range is being in range: show the prompt + allow the click.
-    updateNameplate(state.nameplate, target, target !== null);
+    updateNameplate(state.nameplate, talkable ? { name: talkable.name, verb: 'talk' } : null, talkable !== null);
     const pressed = state.fp.input.interact;
     state.fp.input.interact = false; // consume the one-shot press
-    if (pressed && action) action();
+    if (pressed && talkable) talkTo(state, talkable);
 }
