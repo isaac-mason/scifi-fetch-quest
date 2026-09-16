@@ -18,7 +18,6 @@ Meant as a starting point for your own interactive splat worlds.
 | Gaussian splats | [Spark](https://github.com/sparkjsdev/spark) (`SparkRenderer`, streaming LOD `.rad`) |
 | Physics and character controller | [crashcat](https://www.npmjs.com/package/crashcat) |
 | Navigation | [navcat](https://www.npmjs.com/package/navcat) |
-| Math | [mathcat](https://www.npmjs.com/package/mathcat) |
 | Binary asset packing | [packcat](https://www.npmjs.com/package/packcat) |
 | Asset tooling | [glTF-Transform](https://gltf-transform.dev), [Playwright](https://playwright.dev) |
 | Language and build | TypeScript, [Vite](https://vite.dev) |
